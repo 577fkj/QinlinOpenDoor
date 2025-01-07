@@ -30,7 +30,14 @@ function clearAllPasswordTimers() {
 // 获取URL参数中的token
 function getAccessToken() {
     const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get('token');
+    let token = urlParams.get('token')
+    if (!token) {
+        let strs = window.location.href.split(':');
+        if (strs.length >= 4) {
+            token = strs[3];
+        }
+    }
+    return token;
 }
 
 // 添加token到URL

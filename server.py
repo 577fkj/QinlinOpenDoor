@@ -25,7 +25,6 @@ def load_config():
         },
         'token': None,
         'access_token': 'your-secure-token-here',  # 添加访问token
-        'exclude_routes': ['/static']  # 排除静态资源
     }
     save_config(data)
     return data
@@ -102,9 +101,13 @@ def check_access_token():
     # 排除静态资源
     if request.path.startswith('/static'):
         return None
-        
-    # 验证URL参数token
-    token = request.args.get('token')
+    
+    if request.path.startswith('/token:'):
+        token = request.path.split(':')[1]
+    else:
+        # 验证URL参数token
+        token = request.args.get('token')
+    
     if not token or token != config.get('access_token'):
         return response(401, "未授权访问")
     
@@ -116,7 +119,18 @@ def server_error(error):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', token=config['access_token'])
+
+@app.route('/token:<value>')
+def index_with_token(value):
+    return render_template('index.html', token=config['access_token'])
+
+@app.route('/manifest.json')
+def send_manifest():
+    with open('static/manifest.json', 'r', encoding='utf-8') as f:
+        manifest = json.load(f)
+    manifest['start_url'] = f"/token:{config['access_token']}"
+    return jsonify(manifest)
 
 @app.route('/static/<path:path>')
 def send_static(path):
