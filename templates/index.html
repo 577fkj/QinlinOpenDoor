@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>智能门禁系统</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#1a1a1a" media="(prefers-color-scheme: dark)">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16x16.png">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192x192.png">
+    <script src="/static/js/index.js" defer></script>
+    <link rel="stylesheet" href="/static/css/index.css">
+
+    <script>
+        // 监听系统主题变化
+        if (window.matchMedia) {
+            const colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+            const handleThemeChange = (e) => {
+                document.querySelector('meta[name="theme-color"]').setAttribute(
+                    'content',
+                    e.matches ? '#1a1a1a' : '#ffffff'
+                );
+            };
+            colorSchemeQuery.addEventListener('change', handleThemeChange);
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div id="loginSection">
+            <div class="login-card">
+                <h2>用户登录</h2>
+                <div class="login-form">
+                    <div class="phone-container">
+                        <input type="tel" id="phone" placeholder="请输入手机号" pattern="[0-9]{11}">
+                        <button class="send-code-btn" onclick="sendCode()" id="sendCodeBtn" disabled>获取验证码</button>
+                    </div>
+                    <input type="text" id="code" placeholder="请输入验证码" maxlength="6">
+                    <button class="btn" onclick="login()">登录</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="mainSection" class="hidden">
+            <h2>门禁控制</h2>
+            <select id="communitySelect" class="community-select" onchange="handleCommunityChange()">
+                <option value="">请选择社区</option>
+            </select>
+            <div id="doorList" class="door-list"></div>
+            <!-- <button class="btn" onclick="checkStatus()">查询状态</button>
+            <button class="btn" onclick="doLogout()">退出登录</button> -->
+            <div id="status" class="log-container">
+                <div class="log-title">操作日志</div>
+                <div id="logEntries"></div>
+            </div>
+        </div>
+    </div>
+    <div id="toast" class="toast"></div>
+    <div id="loading" class="loading">
+        <div class="loading-spinner"></div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  qinlin:
+    build: .
+    container_name: qinlin
+    volumes:
+      - ./config:/app/config
+    ports:
+      - "7751:5000"
