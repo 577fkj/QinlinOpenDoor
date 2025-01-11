@@ -241,7 +241,7 @@ function showToast(message, isSuccess = true) {
 }
 
 // 开启特定的门
-async function openSpecificDoor(doorId) {
+async function openSpecificDoor(doorName, doorId) {
     try {
         showLoading();
         if (!userCommunityId) {
@@ -251,10 +251,10 @@ async function openSpecificDoor(doorId) {
         try {
             const response = await fetch(addTokenToUrl(`/open_door?community_id=${userCommunityId}&door_id=${doorId}`));
             const data = await handleResponse(response);
-            if (data.openDoorState) {
-                showToast('开门成功');
+            if (data.openDoorState === 1) {
+                showToast(`开门成功(${doorName})`);
             } else {
-                showToast('开门失败', false);
+                showToast(`开门失败(${doorName}): ${data.openDoorState}`, false);
             }
         } catch (error) {
             showToast(error.message, false);
