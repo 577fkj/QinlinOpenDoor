@@ -2,6 +2,7 @@ const CACHE_NAME = 'door-control-v1';
 const urlsToCache = [
     '/',
     '/manifest.json',
+    '/static/js/md5.js',
     '/static/icons/icon-192x192.png',
     '/static/icons/icon-512x512.png'
 ];

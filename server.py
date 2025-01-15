@@ -5,10 +5,11 @@ import os
 from functools import wraps
 from time import time
 import threading
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 host = os.getenv('HOST', '0.0.0.0')
 port = os.getenv('PORT', 5000)
-debug = os.getenv('DEBUG', False)
+debug = os.getenv('DEBUG', True)
 
 CONFIG_FILE = 'config/config.json'
 
@@ -20,30 +21,96 @@ def load_config():
         with open(CONFIG_FILE, 'r') as f:
             return json.load(f)
     data = {
-        'device': {
-            **qinlinAPI.Device.get_default().to_dict()
-        },
-        'token': None,
+        'user': {},
         'access_token': 'your-secure-token-here',  # 添加访问token
     }
     save_config(data)
     return data
 
-def save_config(config):
+def save_config(conf):
     with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
+        json.dump(conf, f, indent=4)
 
 # 加载配置
 config = load_config()
 
-# 初始化设备和API
-device = qinlinAPI.Device.load_from_dict(config['device'])
+users = []
+waiting_users = []
 
-api = qinlinAPI.QinlinAPI(device)
-if config.get('token'):
-    api.token = config['token']
+def load_users():
+    idx = 0
+    for key, value in config['user'].items():
+        # 初始化设备和API
+        device = qinlinAPI.Device.load_from_dict(value['device'])
+
+        ql_api = qinlinAPI.QinlinAPI(device)
+        if value.get('token'):
+            ql_api.token = value['token']
+
+        user_info = ql_api.get_user_info()
+        community_info = ql_api.get_community_info()
+        all_door = {}
+        for community in community_info:
+            community_id = community['communityId']
+            all_door[community_id] = ql_api.get_all_door_info(community_id)
+
+        config['user'][key]['user_info'] = user_info
+
+        users.append({
+            'index': idx,
+            'phone': key,
+            'user_info': user_info,
+            'community_info': community_info,
+            'all_door': all_door,
+            'is_online': True,
+            'api': ql_api
+        })
+        idx += 1
+
+load_users()
+
+save_config(config)
+
+print(f'users = {users}')
 
 app = Flask(__name__)
+
+def update_user(idx, data):
+    print(f"update_user: {idx}, {data}")
+    for user in users:
+        if user['phone'] == data['phone']:
+            user['phone'] = data['phone']
+            user['user_info'] = data['user_info']
+            user['community_info'] = data['community_info']
+            user['all_door'] = data['all_door']
+            user['is_online'] = True
+            user['api'] = data['api']
+
+            config['user'][user['phone']]['user_info'] = data['user_info']
+            config['user'][user['phone']]['token'] = data['token']
+            config['user'][user['phone']]['device'] = data['device']
+            break
+    users.append({
+        'index': idx,
+        'phone': data['phone'],
+        'user_info': data['user_info'],
+        'community_info': data['community_info'],
+        'all_door': data['all_door'],
+        'is_online': True,
+        'api': data['api']
+    })
+
+    config['user'][data['phone']] = {
+        'token': data['token'],
+        'device': data['device'],
+        'user_info': data['user_info']
+    }
+
+def get_user_api(idx):
+    for user in users:
+        if user['index'] == idx:
+            return user['api']
+    return None
 
 def response(code=200, message='', data=None):
     """
@@ -136,85 +203,160 @@ def send_manifest():
 def send_static(path):
     return send_from_directory('static', path)
 
+@app.route('/get_all_users', methods=['GET'])
+def get_all_users():
+    new_data = []
+    for user in users:
+        new_data.append({
+            'index': user['index'],
+            'phone': user['phone'],
+            'user_info': user['user_info'],
+            'community_info': user['community_info'],
+            'is_online': user['is_online'],
+            'all_door': user['all_door']
+        })
+    return response(200, "success", new_data)
+
 @app.route('/open_door', methods=['GET'])
 def open_door():
+    user_id = request.args.get("user_id")
     door_id = request.args.get("door_id")
     community_id = request.args.get("community_id")
-    if not door_id or not community_id:
-        return response(500, "Please provide door_id and community_id")
-    return response(200, "success", api.open_door(community_id, door_id))
+    if not door_id or not community_id or not user_id:
+        return response(500, "Please provide door_id and community_id and user_id")
+    user_api = get_user_api(int(user_id))
+    if not user_api:
+        return response(500, "User not found")
+    return response(200, "success", user_api.open_door(int(community_id), int(door_id)))
 
 @app.route('/send_sms_code', methods=['GET'])
 def send_sms_code():
+    user_id = request.args.get("user_id")
     phone = request.args.get("phone")
-    return response(200, "success", api.send_sms_code(phone))
+    if not user_id:
+        user_id = -1
+    if not phone:
+        return response(500, "Please provide phone")
+    user_api = get_user_api(int(user_id))
+    if not user_api:
+        device = qinlinAPI.Device.get_default()
+        user_api = qinlinAPI.QinlinAPI(device)
+        user_id = len(waiting_users)
+        waiting_users.append({
+            'index': user_id,
+            'phone': phone,
+            'api': user_api
+        })
+    return response(200, "success", {
+        "index": user_id,
+        "data": user_api.send_sms_code(phone)
+    })
 
 @app.route('/login', methods=['GET'])
 def login():
-    phone = request.args.get("phone")
-    code = request.args.get("code")
-    if not phone or not code:
-        return response(500, "Please provide phone and code")
-    data = api.login(phone, code)
-    token = data.get('sessionId')
-    api.token = token
-    
-    # 保存token到配置文件
-    config['token'] = token
-    save_config(config)
+    try:
+        user_id = request.args.get("user_id")
+        phone = request.args.get("phone")
+        code = request.args.get("code")
+        if not phone or not code or not user_id:
+            return response(500, "Please provide phone and code")
+        user_api = get_user_api(int(user_id))
+        if not user_api:
+            user_api = waiting_users[int(user_id)]['api']
+            user_id = users[-1]['index'] + 1
+        data = user_api.login(phone, code)
+        token = data.get('sessionId')
+        if not token:
+            return response(500, "Login failed")
+        user_api.token = token
 
-    with cache_lock:
-        cache_store.clear()
-    
+        user_info = user_api.get_user_info()
+        community_info = user_api.get_community_info()
+        all_door = {}
+        for community in community_info:
+            community_id = community['communityId']
+            all_door[community_id] = user_api.get_all_door_info(community_id)
+        update_user(int(user_id), {
+            'token': token,
+            'phone': phone,
+            'user_info': user_info,
+            'community_info': community_info,
+            'all_door': all_door,
+            'api': user_api,
+            'device': user_api.device.to_dict()
+        })
+        save_config(config)
+
+        with cache_lock:
+            cache_store.clear()
+    except Exception as e:
+        import logging
+        logging.exception(e)
+
     return response(200, "success", data)
 
 @app.route('/get_user_info', methods=['GET'])
-@cache_response(5)  # 5秒缓存
 def get_user_info():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return response(500, "Please provide user_id")
+    api = get_user_api(int(user_id))
     return response(200, "success", api.get_user_info())
 
 @app.route('/get_community_info', methods=['GET'])
-@cache_response(10)  # 10秒缓存
 def get_community_info():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return response(500, "Please provide user_id")
+    api = get_user_api(int(user_id))
     return response(200, "success", api.get_community_info())
 
 @app.route('/get_all_door_info', methods=['GET'])
-@cache_response(5)
 def get_all_door_info():
+    user_id = request.args.get('user_id')
     community_id = request.args.get('community_id')
-    if not community_id:
-        return response(500, "Please provide community_id")
-    return response(200, "success", api.get_all_door_info(community_id))
+    if not community_id or not user_id:
+        return response(500, "Please provide community_id and user_id")
+    api = get_user_api(int(user_id))
+    return response(200, "success", api.get_all_door_info(int(community_id)))
 
 @app.route('/get_user_door_info', methods=['GET'])
-@cache_response(5)
 def get_user_door_info():
+    user_id = request.args.get('user_id')
     community_id = request.args.get('community_id')
-    if not community_id:
-        return response(500, "Please provide community_id")
-    return response(200, "success", api.get_user_door_info(community_id))
+    if not community_id or not user_id:
+        return response(500, "Please provide community_id and user_id")
+    api = get_user_api(int(user_id))
+    return response(200, "success", api.get_user_door_info(int(community_id)))
 
 @app.route('/get_user_community_expiry_status', methods=['GET'])
 def get_user_community_expiry_status():
+    user_id = request.args.get('user_id')
     community_id = request.args.get('community_id')
-    if not community_id:
-        return response(500, "Please provide community_id")
-    return response(200, "success", api.get_user_community_expiry_status(community_id))
+    if not community_id or not user_id:
+        return response(500, "Please provide community_id and user_id")
+    api = get_user_api(int(user_id))
+    return response(200, "success", api.get_user_community_expiry_status(int(community_id)))
 
 @app.route('/get_support_password_devices', methods=['GET'])
-@cache_response(3600)
+@cache_response(3600 * 6) # 缓存6小时
 def get_support_password_devices():
-    return response(200, "success", api.get_support_password_devices())
+    return response(200, "success", qinlinAPI.QinlinAPI.get_support_password_devices())
 
 @app.route('/check_login', methods=['GET'])
-@cache_response(5)
 def check_login():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return response(500, "Please provide user_id")
+    api = get_user_api(int(user_id))
     return response(200, "success", api.check_login())
 
 @app.route('/logout', methods=['GET'])
 def logout():
-    with cache_lock:
-        cache_store.clear()
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return response(500, "Please provide user_id")
+    api = get_user_api(int(user_id))
     return response(200, "success", api.logout())
 
 @app.route('/get_door_paddword', methods=['GET'])
@@ -224,11 +366,31 @@ def get_door_paddword():
     if not mac or not community_id:
         return response(500, "Please provide mac and community_id")
     return response(200, "success", {
-        "password": qinlinAPI.QinlinCrypto.get_open_door_password(mac, community_id)
+        "password": qinlinAPI.QinlinCrypto.get_open_door_password(mac, int(community_id))
     })
+
+def check_login_task():
+    for user in users:
+        user_api = user['api']
+        try:
+            if user_api.check_login() > 0:
+                user['is_online'] = True
+            else:
+                user['is_online'] = False
+        except Exception as e:
+            user['is_online'] = False
+            print(f"Check login failed: {e}")
+
+def start_task():
+    scheduler = BlockingScheduler()
+    scheduler.add_job(check_login_task, 'interval', seconds=60)
+    scheduler.start()
 
 if __name__ == "__main__":
     print(f'token = {config["access_token"]}')
+
+    threading.Thread(target=start_task).start()
+
     app.run(
         host=host,
         port=port,

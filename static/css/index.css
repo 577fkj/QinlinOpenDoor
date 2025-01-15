@@ -82,9 +82,17 @@ body {
 
 .hidden { display: none !important; }
 .btn {
-    padding: 10px 20px;
-    margin: 5px;
+    background-color: var(--button-enabled-bg);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
     cursor: pointer;
+    font-size: 14px;
+    margin: 5px 0;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    width: 100%;
 }
 .door-list {
     display: grid;
@@ -594,4 +602,140 @@ input[type="tel"] {
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+}
+
+.account-manage-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--background-color);
+    color: var(--text-color);
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.account-manage-btn:hover {
+    background: var(--button-enabled-bg);
+    color: white;
+}
+
+.dialog-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+
+.dialog-content {
+    background: var(--background-color);
+    padding: 20px;
+    border-radius: 8px;
+    width: 90%;
+    max-width: 400px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.dialog-content h3 {
+    margin: 0 0 20px 0;
+    text-align: center;
+}
+
+.account-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 20px;
+}
+
+.account-item {
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+
+.account-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.account-status {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.status-online {
+    background-color: #4CAF50;
+}
+
+.status-offline {
+    background-color: #999;
+}
+
+.account-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.account-detail-content {
+    margin-bottom: 20px;
+}
+
+.detail-item {
+    display: flex;
+    margin-bottom: 10px;
+    padding: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.detail-label {
+    font-weight: bold;
+    width: 120px;
+    color: var(--text-color);
+}
+
+.detail-value {
+    flex: 1;
+    color: var(--text-color);
+}
+
+.dialog-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.btn-cancel {
+    background-color: #666 !important;
+}
+
+.add-account-form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+@media (max-width: 480px) {
+    .dialog-content {
+        width: calc(100% - 40px);
+        margin: 20px;
+    }
+    
+    .account-manage-btn {
+        padding: 12px 16px;
+        height: 45px;
+    }
 }

@@ -4,9 +4,10 @@ import random
 import time
 import httpx
 from datetime import datetime
-from Crypto.Cipher import AES
+from Crypto.Cipher import AES, DES3
 from Crypto.Util.Padding import pad
 from httpx import Request, Response, URL
+import math
 
 global_headers = {
     'User-Agent': 'Dart/2.18 (dart:io)'
@@ -16,19 +17,30 @@ appid = 'gbDjIZQSOpCMX49P'
 appSecret = 'OKFoQ9MmNXQtcyXROo4PnaFkfDPTHuDg'
 apiKey = 'qiAnlPinP'
 
+bluetooth_des_key = '55AA5A5AA5'
+bluetooth_header = '30'
+bluetooth_key = 'FA34DD0001'
+
+
 phone_aes_key = bytes.fromhex('FBC213C4C7BEEBD2AA4EDBF0F681C41B')
 
-verdors = ['Xiaomi', 'Huawei', 'Oppo', 'Vivo', 'Samsung', 'Meizu', 'OnePlus', 'Sony', 'Google', 'Nokia', 'LG', 'HTC', 'Lenovo', 'ZTE', 'Coolpad', 'Asus', 'Sharp', 'TCL', 'Gionee', 'Motorola', 'LeEco', 'Letv', 'Smartisan', 'ZUK', 'Nubia', 'Hisense', 'Qiku', '360']
+verdors = ['Xiaomi', 'Huawei', 'Oppo', 'Vivo', 'Samsung', 'Meizu', 'OnePlus', 'Sony', 'Google', 'Nokia', 'LG', 'HTC',
+           'Lenovo', 'ZTE', 'Coolpad', 'Asus', 'Sharp', 'TCL', 'Gionee', 'Motorola', 'LeEco', 'Letv', 'Smartisan',
+           'ZUK', 'Nubia', 'Hisense', 'Qiku', '360']
 channels = ['xiaomi', 'vivo']
+
 
 def random_vendor():
     return random.choice(verdors)
 
+
 def random_openid():
     return ''.join([random.choice('0123456789abcdef') for _ in range(16)])
 
+
 def random_channel():
     return random.choice(channels)
+
 
 class Device:
     def __init__(self, vendor: str, openId: str, appVersionCode: str, appVersionName: str, appChannel: str,
@@ -63,7 +75,7 @@ class Device:
             appChannel=random_channel(),
             appPlatform='0'
         )
-    
+
     @staticmethod
     def load_from_dict(data: dict[str, str]) -> 'Device':
         """
@@ -114,6 +126,7 @@ def get_timestamp() -> int:
     :return: 时间戳
     """
     return int(time.time() * 1000)
+
 
 class QinlinCrypto:
     @staticmethod
@@ -175,6 +188,68 @@ class QinlinCrypto:
         return QinlinCrypto.get_sign(data, f'appsecret={appSecret}')
 
     @staticmethod
+    def pad_string(s: str, block_size: int, padding: str = '0') -> str:
+        """
+        使用指定字符填充字符串
+        """
+        if len(s) % block_size == 0:
+            return s
+        return (block_size - len(s) % block_size) * padding + s
+
+    @staticmethod
+    def des3_encrypt(key: str, plaintext: str) -> bytes:
+        key = bytes.fromhex(key)
+        plaintext = bytes.fromhex(plaintext)
+
+        length = 8 - (len(plaintext) % 8)
+        plaintext += bytes([length]) * length
+
+        cipher = DES3.new(key, DES3.MODE_CBC, b'\0' * 8)
+        ciphertext = cipher.encrypt(plaintext)
+
+        return ciphertext
+
+    @staticmethod
+    def xor(data: bytes) -> bytes:
+        """
+        计算异或校验码
+        :param data: 数据
+        :return: 校验码
+        """
+        result = 0
+        for b in data:
+            result ^= b
+        return bytes([result])
+
+    @staticmethod
+    def get_bluetooth_open_door_data(mac: str, timestamp: int = get_timestamp()) -> bytes:
+        """
+        获取蓝牙开门数据
+        :param mac: MAC 地址
+        :param timestamp: 时间戳
+        :return: 开门数据
+        """
+        date = datetime.fromtimestamp(timestamp / 1000)
+        year = QinlinCrypto.pad_string(str(date.year)[2:], 2)
+        month = QinlinCrypto.pad_string(str(date.month), 2)
+        day = QinlinCrypto.pad_string(str(date.day), 2)
+        hour = QinlinCrypto.pad_string(str(date.hour), 2)
+        minute = QinlinCrypto.pad_string(str(date.minute), 2)
+
+        date = f'{year}{month}{day}{hour}{minute}'
+
+        data = f'{date}{mac[6:]}'
+        key = f'{mac}{date}{bluetooth_des_key}'
+
+        data = QinlinCrypto.des3_encrypt(key, data).hex()
+        data = data[:16]
+
+        data = f'{bluetooth_header}{data}{date}{bluetooth_key}'
+        data += QinlinCrypto.xor(bytes.fromhex(data)).hex()
+
+        return bytes.fromhex(data)
+
+    @staticmethod
     def get_api_sign(data: dict[str, str]) -> str:
         """
         获取 API 签名
@@ -184,20 +259,31 @@ class QinlinCrypto:
         return QinlinCrypto.get_sign(data, f'key={apiKey}')
 
     @staticmethod
-    def round_to_nearest_10_minutes(input_time: datetime) -> datetime:
+    def get_next_10_minute(input_time: datetime) -> datetime:
         """
         将传入的时间向下取整到最近的10分钟。
 
         :param input_time: 输入的时间（datetime对象）
         :return: 向下取整到10分钟的时间（datetime对象）
         """
-        rounded_minute = (input_time.minute // 10) * 10
+        rounded_minute = math.ceil(input_time.minute / 10) * 10
+        rounded_time = input_time.replace(minute=rounded_minute, second=0, microsecond=0)
+        return rounded_time
+
+    @staticmethod
+    def get_current_10_minute(input_time: datetime) -> datetime:
+        """
+        获取当前时间向下取整到最近的10分钟。
+
+        :return: 向下取整到10分钟的时间（datetime对象）
+        """
+        rounded_minute = math.floor(input_time.minute / 10) * 10
         rounded_time = input_time.replace(minute=rounded_minute, second=0, microsecond=0)
         return rounded_time
 
     @staticmethod
     def get_open_door_password(mac: str, community_id: int,
-                               timestamp: int = round_to_nearest_10_minutes(datetime.now())) -> str:
+                               timestamp: int = get_current_10_minute(datetime.now())) -> str:
         """
         获取开门密码
         :param mac: MAC 地址
@@ -313,6 +399,7 @@ class MobileAPI3Transport(httpx.BaseTransport):
         self._wrapper.close()
 
 
+http2Client = httpx.Client(http2=True)
 class QinlinAPI:
     token = ''
 
@@ -324,7 +411,6 @@ class QinlinAPI:
             http2=True,
             transport=MobileAPI3Transport(self),
         )
-        self.http2Client = httpx.Client(http2=True)
         headers = {
             **global_headers,
             **self.device.to_headers_dict(),
@@ -355,7 +441,7 @@ class QinlinAPI:
         data = {
             'mobile': mobile
         }
-        response = self.http2Client.post(url, headers=headers, json=data)
+        response = http2Client.post(url, headers=headers, json=data)
         return response.json()
 
     def login(self, mobile, sms_code):
@@ -486,12 +572,13 @@ class QinlinAPI:
         response = self.mobileApi3.post(url, params=data)
         return response.json()
 
-    def get_support_password_devices(self):
+    @staticmethod
+    def get_support_password_devices():
         """
         获取支持密码的设备
         :return: 支持密码的设备
         """
         url = 'https://qapp2.qinlinkeji.com/app/v1/userConfig/getConfig'
 
-        response = self.http2Client.get(url)
+        response = http2Client.get(url)
         return response.json()['data']['supportPasswords']

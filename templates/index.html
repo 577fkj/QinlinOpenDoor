@@ -12,7 +12,8 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16x16.png">
     <link rel="apple-touch-icon" href="/static/icons/icon-192x192.png">
-    <script src="/static/js/index.js" defer></script>
+    <script src="/static/js/md5.js"></script>
+    <script src="/static/js/index.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
 
     <script>
@@ -36,6 +37,7 @@
                 <h2>用户登录</h2>
                 <div class="login-form">
                     <div class="phone-container">
+                        <input type="text" id="loginID" hidden="hidden">
                         <input type="tel" id="phone" placeholder="请输入手机号" pattern="[0-9]{11}">
                         <button class="send-code-btn" onclick="sendCode()" id="sendCodeBtn" disabled>获取验证码</button>
                     </div>
@@ -47,12 +49,13 @@
 
         <div id="mainSection" class="hidden">
             <h2>门禁控制</h2>
-            <select id="communitySelect" class="community-select" onchange="handleCommunityChange()">
-                <option value="">请选择社区</option>
-            </select>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <select id="communitySelect" class="community-select" onchange="handleCommunityChange()">
+                    <option value="">请选择社区</option>
+                </select>
+                <button id="accountManageBtn" class="account-manage-btn">账号管理</button>
+            </div>
             <div id="doorList" class="door-list"></div>
-            <!-- <button class="btn" onclick="checkStatus()">查询状态</button>
-            <button class="btn" onclick="doLogout()">退出登录</button> -->
             <div id="status" class="log-container">
                 <div class="log-title">操作日志</div>
                 <div id="logEntries"></div>
@@ -62,6 +65,50 @@
     <div id="toast" class="toast"></div>
     <div id="loading" class="loading">
         <div class="loading-spinner"></div>
+    </div>
+
+    <!-- 添加账号管理对话框 -->
+    <div id="accountDialog" class="dialog-overlay">
+        <div class="dialog-content">
+            <h3>账号管理</h3>
+            <div class="account-list" id="accountList"></div>
+            <div class="dialog-footer">
+                <button onclick="showAddAccountForm()" class="btn">添加账号</button>
+                <button onclick="closeAccountDialog()" class="btn btn-cancel">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加账号表单对话框 -->
+    <div id="addAccountDialog" class="dialog-overlay">
+        <div class="dialog-content">
+            <h3>添加账号</h3>
+            <div class="add-account-form">
+                <input type="text" id="newID" hidden="hidden">
+                <input type="tel" id="newPhone" placeholder="请输入手机号">
+                <div class="phone-container">
+                    <input type="text" id="newCode" placeholder="请输入验证码" maxlength="6">
+                    <button id="newSendCodeBtn" class="send-code-btn" onclick="sendNewAccountCode()">获取验证码</button>
+                </div>
+            </div>
+            <div class="dialog-footer">
+                <button onclick="addAccount()" class="btn">确认添加</button>
+                <button onclick="closeAddAccountDialog()" class="btn btn-cancel">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 在现有的dialog-overlay后添加 -->
+    <div id="accountDetailDialog" class="dialog-overlay">
+        <div class="dialog-content">
+            <h3>账号详情</h3>
+            <div class="account-detail-content" id="accountDetailContent">
+                <!-- 详情内容将通过JS动态填充 -->
+            </div>
+            <div class="dialog-footer">
+                <button onclick="closeAccountDetailDialog()" class="btn btn-cancel">关闭</button>
+            </div>
+        </div>
     </div>
 </body>
 </html>
