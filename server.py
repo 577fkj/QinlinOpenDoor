@@ -6,10 +6,11 @@ from functools import wraps
 from time import time
 import threading
 from apscheduler.schedulers.blocking import BlockingScheduler
+import logging
 
 host = os.getenv('HOST', '0.0.0.0')
 port = os.getenv('PORT', 5000)
-debug = os.getenv('DEBUG', True)
+debug = os.getenv('DEBUG', False)
 
 CONFIG_FILE = 'config/config.json'
 
@@ -182,6 +183,7 @@ def check_access_token():
 
 @app.errorhandler(Exception)
 def server_error(error):
+    logging.exception(error)
     return response(500, str(error))
 
 @app.route('/')
@@ -239,6 +241,12 @@ def send_sms_code():
         return response(500, "Please provide phone")
     user_api = get_user_api(int(user_id))
     if not user_api:
+        for user in users:
+            if user['phone'] == phone:
+                user_api = user['api']
+                user_id = user['index']
+                break
+    if not user_api:
         device = qinlinAPI.Device.get_default()
         user_api = qinlinAPI.QinlinAPI(device)
         user_id = len(waiting_users)
@@ -254,44 +262,40 @@ def send_sms_code():
 
 @app.route('/login', methods=['GET'])
 def login():
-    try:
-        user_id = request.args.get("user_id")
-        phone = request.args.get("phone")
-        code = request.args.get("code")
-        if not phone or not code or not user_id:
-            return response(500, "Please provide phone and code")
-        user_api = get_user_api(int(user_id))
-        if not user_api:
-            user_api = waiting_users[int(user_id)]['api']
-            user_id = users[-1]['index'] + 1
-        data = user_api.login(phone, code)
-        token = data.get('sessionId')
-        if not token:
-            return response(500, "Login failed")
-        user_api.token = token
+    user_id = request.args.get("user_id")
+    phone = request.args.get("phone")
+    code = request.args.get("code")
+    if not phone or not code or not user_id:
+        return response(500, "Please provide phone and code")
+    user_api = get_user_api(int(user_id))
+    if not user_api:
+        user_api = waiting_users[int(user_id)]['api']
+        user_id = users[-1]['index'] + 1
+    data = user_api.login(phone, code)
+    token = data.get('sessionId')
+    if not token:
+        return response(500, "Login failed")
+    user_api.token = token
 
-        user_info = user_api.get_user_info()
-        community_info = user_api.get_community_info()
-        all_door = {}
-        for community in community_info:
-            community_id = community['communityId']
-            all_door[community_id] = user_api.get_all_door_info(community_id)
-        update_user(int(user_id), {
-            'token': token,
-            'phone': phone,
-            'user_info': user_info,
-            'community_info': community_info,
-            'all_door': all_door,
-            'api': user_api,
-            'device': user_api.device.to_dict()
-        })
-        save_config(config)
+    user_info = user_api.get_user_info()
+    community_info = user_api.get_community_info()
+    all_door = {}
+    for community in community_info:
+        community_id = community['communityId']
+        all_door[community_id] = user_api.get_all_door_info(community_id)
+    update_user(int(user_id), {
+        'token': token,
+        'phone': phone,
+        'user_info': user_info,
+        'community_info': community_info,
+        'all_door': all_door,
+        'api': user_api,
+        'device': user_api.device.to_dict()
+    })
+    save_config(config)
 
-        with cache_lock:
-            cache_store.clear()
-    except Exception as e:
-        import logging
-        logging.exception(e)
+    with cache_lock:
+        cache_store.clear()
 
     return response(200, "success", data)
 
@@ -379,6 +383,7 @@ def check_login_task():
                 user['is_online'] = False
         except Exception as e:
             user['is_online'] = False
+            logging.exception(e)
             print(f"Check login failed: {e}")
 
 def start_task():
