@@ -204,13 +204,21 @@ class QinlinCrypto:
         length = 8 - (len(plaintext) % 8)
         plaintext += bytes([length]) * length
 
-        cipher = DES3.new(key, DES3.MODE_CBC, b'\0' * 8)
+        cipher = DES3.new(key, DES3.MODE_ECB)
         ciphertext = cipher.encrypt(plaintext)
 
         return ciphertext
 
     @staticmethod
-    def xor(data: bytes) -> bytes:
+    def des3_decrypt(key: str, ciphertext: bytes) -> bytes:
+        key = bytes.fromhex(key)
+        cipher = DES3.new(key, DES3.MODE_ECB)
+        plaintext = cipher.decrypt(ciphertext)
+        padding = plaintext[-1]
+        return plaintext
+
+    @staticmethod
+    def xor(data: bytes) -> int:
         """
         计算异或校验码
         :param data: 数据
@@ -219,7 +227,7 @@ class QinlinCrypto:
         result = 0
         for b in data:
             result ^= b
-        return bytes([result])
+        return result
 
     @staticmethod
     def get_bluetooth_open_door_data(mac: str, timestamp: int = get_timestamp()) -> bytes:
@@ -245,9 +253,53 @@ class QinlinCrypto:
         data = data[:16]
 
         data = f'{bluetooth_header}{data}{date}{bluetooth_key}'
-        data += QinlinCrypto.xor(bytes.fromhex(data)).hex()
+        data += hex(QinlinCrypto.xor(bytes.fromhex(data)))[2:]
 
         return bytes.fromhex(data)
+
+    @staticmethod
+    def unpack_bluetooth_open_door_data(mac: str, data: bytes | bytearray | str) -> dict[str, str]:
+        """
+        解析蓝牙开门数据
+        :param mac: MAC 地址
+        :param data: 数据
+        :return: 解析结果
+        """
+        if isinstance(data, str):
+            data = bytes.fromhex(data.replace(' ', ''))
+        if len(data) != 20:
+            raise ValueError('Invalid data length')
+
+        header = data[0]
+        if header != int(bluetooth_header, 16):
+            raise ValueError('Invalid header')
+
+        body = data[1:9]
+        date = data[9:14].hex().upper()
+        key = data[14:19].hex().upper()
+        xor = data[19]
+
+        if xor != QinlinCrypto.xor(data[:-1]):
+            raise ValueError('Invalid xor')
+
+        if key != bluetooth_key:
+            raise ValueError('Invalid key')
+
+        key = f'{mac}{date}{bluetooth_des_key}'
+
+        body = QinlinCrypto.des3_decrypt(key, body)
+        dec_date = body[:5].hex().upper()
+        dec_mac = body[5:].hex().upper()
+
+        if dec_date != date:
+            raise ValueError('Invalid date')
+        if dec_mac != mac[6:]:
+            raise ValueError('Invalid mac')
+
+        return {
+            'date': dec_date,
+            'mac': dec_mac
+        }
 
     @staticmethod
     def get_api_sign(data: dict[str, str]) -> str:
@@ -582,3 +634,9 @@ class QinlinAPI:
 
         response = http2Client.get(url)
         return response.json()['data']['supportPasswords']
+
+if __name__ == '__main__':
+    m = 'AABBCCDDEEFF'
+    d = QinlinCrypto.get_bluetooth_open_door_data(m).hex().upper()
+    print(d)
+    print(QinlinCrypto.unpack_bluetooth_open_door_data(m, d))
