@@ -53,7 +53,7 @@
                 <select id="communitySelect" class="community-select" onchange="handleCommunityChange()">
                     <option value="">请选择社区</option>
                 </select>
-                <button id="accountManageBtn" class="account-manage-btn">账号管理</button>
+                <button onclick="showAccountDialog()" class="account-manage-btn">账号管理</button>
             </div>
             <div id="doorList" class="door-list"></div>
             <div id="status" class="log-container">
@@ -94,6 +94,25 @@
             <div class="dialog-footer">
                 <button onclick="addAccount()" class="btn">确认添加</button>
                 <button onclick="closeAddAccountDialog()" class="btn btn-cancel">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 重新登录对话框 -->
+    <div id="reLoginAccountDialog" class="dialog-overlay">
+        <div class="dialog-content">
+            <h3>重新登录</h3>
+            <div class="add-account-form">
+                <input type="text" id="reLoginId" hidden="hidden">
+                <input type="tel" id="reLoginPhone" placeholder="请输入手机号" disabled>
+                <div class="phone-container">
+                    <input type="text" id="reLoginCode" placeholder="请输入验证码" maxlength="6">
+                    <button id="reLoginSendCodeBtn" class="send-code-btn" onclick="sendReLoginAccountCode()">获取验证码</button>
+                </div>
+            </div>
+            <div class="dialog-footer">
+                <button onclick="reLoginAccount()" class="btn">登录</button>
+                <button onclick="closeReLoginFrom()" class="btn btn-cancel">取消</button>
             </div>
         </div>
     </div>

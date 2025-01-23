@@ -36,7 +36,6 @@ def save_config(conf):
 config = load_config()
 
 users = []
-waiting_users = []
 
 def load_users():
     idx = 0
@@ -48,12 +47,21 @@ def load_users():
         if value.get('token'):
             ql_api.token = value['token']
 
-        user_info = ql_api.get_user_info()
-        community_info = ql_api.get_community_info()
+        user_info = config['user'][key].get('user_info')
+        community_info = []
         all_door = {}
-        for community in community_info:
-            community_id = community['communityId']
-            all_door[community_id] = ql_api.get_all_door_info(community_id)
+        online = False
+        try:
+            user_info = ql_api.get_user_info()
+            community_info = ql_api.get_community_info()
+            for community in community_info:
+                community_id = community['communityId']
+                all_door[community_id] = ql_api.get_all_door_info(community_id)
+
+            online = ql_api.check_login() > 0
+        except Exception as e:
+            logging.exception(e)
+            print(f"Load user failed: {e}")
 
         config['user'][key]['user_info'] = user_info
 
@@ -63,7 +71,7 @@ def load_users():
             'user_info': user_info,
             'community_info': community_info,
             'all_door': all_door,
-            'is_online': True,
+            'is_online': online,
             'api': ql_api
         })
         idx += 1
@@ -76,10 +84,11 @@ print(f'users = {users}')
 
 app = Flask(__name__)
 
-def update_user(idx, data):
-    print(f"update_user: {idx}, {data}")
+def update_user(data):
+    print(f"update_user: {data}")
     for user in users:
         if user['phone'] == data['phone']:
+            user['index'] = data['index']
             user['phone'] = data['phone']
             user['user_info'] = data['user_info']
             user['community_info'] = data['community_info']
@@ -90,9 +99,10 @@ def update_user(idx, data):
             config['user'][user['phone']]['user_info'] = data['user_info']
             config['user'][user['phone']]['token'] = data['token']
             config['user'][user['phone']]['device'] = data['device']
-            break
+            return
+
     users.append({
-        'index': idx,
+        'index': data['index'],
         'phone': data['phone'],
         'user_info': data['user_info'],
         'community_info': data['community_info'],
@@ -107,10 +117,18 @@ def update_user(idx, data):
         'user_info': data['user_info']
     }
 
-def get_user_api(idx):
+def get_user_api(idx, phone=None):
+    user = get_user(idx, phone)
+    if user:
+        return user['api']
+    return None
+
+def get_user(idx, phone=None):
     for user in users:
+        if phone and user['phone'] == phone:
+            return user
         if user['index'] == idx:
-            return user['api']
+            return user
     return None
 
 def response(code=200, message='', data=None):
@@ -237,24 +255,32 @@ def send_sms_code():
     phone = request.args.get("phone")
     if not user_id:
         user_id = -1
+
     if not phone:
         return response(500, "Please provide phone")
-    user_api = get_user_api(int(user_id))
-    if not user_api:
-        for user in users:
-            if user['phone'] == phone:
-                user_api = user['api']
-                user_id = user['index']
-                break
-    if not user_api:
+
+    user = get_user(int(user_id), phone)
+    if not user:
         device = qinlinAPI.Device.get_default()
         user_api = qinlinAPI.QinlinAPI(device)
-        user_id = len(waiting_users)
-        waiting_users.append({
+        if len(users) > 0:
+            user_id = users[-1]['index'] + 1
+        else:
+            user_id = 0
+        update_user({
             'index': user_id,
             'phone': phone,
-            'api': user_api
+            'token': '',
+            'user_info': {},
+            'community_info': [],
+            'all_door': {},
+            'api': user_api,
+            'device': device
         })
+    else:
+        user_api = user['api']
+        user_id = user['index']
+
     return response(200, "success", {
         "index": user_id,
         "data": user_api.send_sms_code(phone)
@@ -267,10 +293,11 @@ def login():
     code = request.args.get("code")
     if not phone or not code or not user_id:
         return response(500, "Please provide phone and code")
-    user_api = get_user_api(int(user_id))
-    if not user_api:
-        user_api = waiting_users[int(user_id)]['api']
-        user_id = users[-1]['index'] + 1
+    user = get_user(int(user_id), phone)
+    if not user:
+        return response(500, "User not found")
+    user_api = user['api']
+    user_id = user['index']
     data = user_api.login(phone, code)
     token = data.get('sessionId')
     if not token:
@@ -283,7 +310,8 @@ def login():
     for community in community_info:
         community_id = community['communityId']
         all_door[community_id] = user_api.get_all_door_info(community_id)
-    update_user(int(user_id), {
+    update_user({
+        'index': int(user_id),
         'token': token,
         'phone': phone,
         'user_info': user_info,
@@ -377,6 +405,8 @@ def check_login_task():
     for user in users:
         user_api = user['api']
         try:
+            if not user['is_online']:
+                continue
             if user_api.check_login() > 0:
                 user['is_online'] = True
             else:

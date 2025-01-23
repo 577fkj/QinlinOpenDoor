@@ -57,24 +57,6 @@ async function getAllUser() {
     }
 }
 
-// 获取所有社区信息
-async function getCommunities() {
-    try {
-        const response = await fetch(addTokenToUrl('/get_community_info'));
-        const data = await handleResponse(response);
-        communities = data;
-        updateCommunitySelect();
-        
-        if (communities && communities.length > 0) {
-            const select = document.getElementById('communitySelect');
-            select.value = communities[0].communityId;
-            await handleCommunityChange();
-        }
-    } catch (error) {
-        showToast(error.message, false);
-    }
-}
-
 // 更新社区选择下拉框
 async function updateCommunitySelect(communities) {
     const select = document.getElementById('communitySelect');
@@ -309,9 +291,13 @@ async function sendCode() {
             let data = await handleResponse(response);
             console.log(data);
             loginID.value = data.index;
-            showToast('验证码已发送');
-            countdown = 60;
-            updateCountdown();
+            if (data.data.code === 0) {
+                showToast('验证码已发送');
+                countdown = 60;
+                updateCountdown();
+            } else {
+                showToast(data.data.data.message, false);
+            }
         } catch (error) {
             showToast(error.message, false);
         }
@@ -342,7 +328,7 @@ async function login() {
             if (data.sessionId) {
                 showToast('登录成功');
                 showMainSection();
-                await getCommunities();
+                await loadUserInfo();
             } else {
                 showToast('登录失败', false);
             }
@@ -354,6 +340,27 @@ async function login() {
     }
 }
 
+async function loadUserInfo() {
+    allUsers = await getAllUser();
+        if (allUsers.length > 0) {
+            showMainSection();
+        }
+        let communitys = {};
+        for (let user of allUsers) {
+            if (user.all_door) {
+                for (let communityId in user.all_door) {
+                    doors[communityId] = user.all_door[communityId];
+                }
+            }
+            if (user.community_info && user.community_info.length > 0) {
+                for (let community of user.community_info) {
+                    communitys[user.index] = community;
+                }
+            }
+        }
+        await updateCommunitySelect(communitys);
+}
+
 // 页面加载完成后初始化按钮状态
 document.addEventListener('DOMContentLoaded', async function() {
     const btn = document.getElementById('sendCodeBtn');
@@ -362,8 +369,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     const btn2 = document.getElementById('newSendCodeBtn');
     btn2.disabled = true;
     btn2.classList.remove('enabled');
-    
-    document.getElementById('accountManageBtn').addEventListener('click', showAccountDialog);
 
     document.getElementById('phone').addEventListener('input', function() {
         const btn = document.getElementById('sendCodeBtn');
@@ -388,25 +393,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     try {
         showLoading();
-
-        allUsers = await getAllUser();
-        if (allUsers.length > 0) {
-            showMainSection();
-        }
-        let communitys = {};
-        for (let user of allUsers) {
-            if (user.all_door) {
-                for (let communityId in user.all_door) {
-                    doors[communityId] = user.all_door[communityId];
-                }
-            }
-            if (user.community_info && user.community_info.length > 0) {
-                for (let community of user.community_info) {
-                    communitys[user.index] = community;
-                }
-            }
-        }
-        await updateCommunitySelect(communitys);
+        await loadUserInfo();
     } finally {
         hideLoading();
     }
@@ -459,12 +446,95 @@ function updateAccountList() {
                 <span>${user.phone}</span>
             </div>
             <div class="account-actions">
+                <button onclick="showReLoginFrom('${user.phone}', '${user.index}')" class="btn" style="width: 100px;">重新登录</button>
                 <button onclick="showAccountDetail('${user.phone}')" class="btn">详情</button>
 <!--                <button onclick="removeAccount('${user.phone}')" class="btn btn-cancel">删除</button>-->
             </div>
         `;
         accountList.appendChild(accountItem);
     });
+}
+
+function showReLoginFrom(phone, id) {
+    document.getElementById('reLoginPhone').value = phone;
+    document.getElementById('reLoginId').value = id;
+    document.getElementById('reLoginCode').value = '';
+    let btn = document.getElementById('reLoginSendCodeBtn');
+    btn.disabled = false;
+    btn.classList.add('enabled');
+
+    document.getElementById('reLoginAccountDialog').style.display = 'flex';
+}
+
+function closeReLoginFrom() {
+    document.getElementById('reLoginPhone').value = '';
+    document.getElementById('reLoginCode').value = '';
+    document.getElementById('reLoginId').value = '';
+    document.getElementById('reLoginAccountDialog').style.display = 'none';
+}
+
+async function sendReLoginAccountCode() {
+    const phone = document.getElementById('reLoginPhone').value;
+    const reLoginId = document.getElementById('reLoginId').value;
+    if (!validatePhone(phone)) {
+        showToast('请输入正确的手机号', false);
+        return;
+    }
+
+    try {
+        showLoading();
+        const response = await fetch(addTokenToUrl(`/send_sms_code?user_id=${reLoginId}&phone=${phone}`));
+        let data = await handleResponse(response);
+        console.log(data);
+        showToast('验证码已发送');
+
+        // 开始倒计时
+        const btn = document.getElementById('reLoginSendCodeBtn');
+        btn.disabled = true;
+        let countdown = 60;
+
+        const timer = setInterval(() => {
+            btn.textContent = `${countdown}秒后重试`;
+            countdown--;
+            if (countdown < 0) {
+                clearInterval(timer);
+                btn.disabled = false;
+                btn.textContent = '获取验证码';
+            }
+        }, 1000);
+    } catch (error) {
+        showToast(error.message, false);
+    } finally {
+        hideLoading();
+    }
+}
+
+async function reLoginAccount() {
+    const phone = document.getElementById('reLoginPhone').value;
+    const code = document.getElementById('reLoginCode').value;
+    const reLoginID = document.getElementById('reLoginId').value;
+
+    try {
+        showLoading();
+        const response = await fetch(addTokenToUrl(`/login?user_id=${reLoginID}&phone=${phone}&code=${code}`));
+        const data = await handleResponse(response);
+        console.log(data);
+        showToast('重新登录成功');
+
+        // 刷新账号列表
+        await loadUserInfo();
+        updateAccountList();
+        closeReLoginFrom();
+
+        // 清空表单
+        document.getElementById('reLoginPhone').value = '';
+        document.getElementById('reLoginCode').value = '';
+        document.getElementById('reLoginId').value = '';
+    } catch (error) {
+        showToast(error.message, false);
+    } finally {
+        hideLoading();
+    }
 }
 
 // 添加新函数
@@ -520,13 +590,13 @@ async function addAccount() {
         showToast('添加账号成功');
         
         // 刷新账号列表
-        allUsers = await getAllUser();
-        updateAccountList();
+        await loadUserInfo();
         closeAddAccountDialog();
         
         // 清空表单
         document.getElementById('newPhone').value = '';
         document.getElementById('newCode').value = '';
+        document.getElementById('newID').value = '';
     } catch (error) {
         showToast(error.message, false);
     } finally {
