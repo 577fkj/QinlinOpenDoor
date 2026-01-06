@@ -1,13 +1,16 @@
 from flask import Flask, jsonify, request, render_template, send_from_directory
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Any
+from functools import wraps
+from time import time
 import qinlinAPI
 import json
 import os
-from functools import wraps
-from time import time
 import threading
-from apscheduler.schedulers.blocking import BlockingScheduler
 import logging
 import re
+from apscheduler.schedulers.blocking import BlockingScheduler
+from enum import Enum
 
 # 配置日志
 logging.basicConfig(
@@ -16,614 +19,950 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-host = os.getenv('HOST', '0.0.0.0')
-port = os.getenv('PORT', 5000)
-debug = os.getenv('DEBUG', False)
-
+# ================== 配置常量 ==================
+HOST = os.getenv('HOST', '0.0.0.0')
+PORT = os.getenv('PORT', 5000)
+DEBUG = os.getenv('DEBUG', False)
 CONFIG_FILE = 'config/config.json'
+CONFIG_DIR = 'config'
 
-if not os.path.exists('config'):
-    os.makedirs('config')
+# ================== 数据结构 ==================
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    data = {
-        'user': {},
-        'access_token': 'your-secure-token-here',  # 添加访问token
-        'auto_relogin_retry': 2,  # 自动重登重试次数
-    }
-    save_config(data)
-    return data
+class ResponseCode(Enum):
+    """响应状态码枚举"""
+    SUCCESS = 200
+    BAD_REQUEST = 400
+    UNAUTHORIZED = 401
+    NOT_FOUND = 404
+    SERVER_ERROR = 500
 
-def save_config(conf):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(conf, f, indent=4)
 
-# 加载配置
-config = load_config()
+@dataclass
+class ApiResponse:
+    """统一API响应结构"""
+    code: int
+    message: str
+    data: Any = None
 
-users = []
+    def to_dict(self) -> Dict:
+        return {
+            'code': self.code,
+            'message': self.message,
+            'data': self.data
+        }
 
-# 等待验证码的状态管理
-waiting_sms_code = {}
-waiting_sms_lock = threading.Lock()
 
-def load_users():
-    idx = 0
-    for key, value in config['user'].items():
-        # 初始化设备和API
-        device = qinlinAPI.Device.load_from_dict(value['device'])
+@dataclass
+class UserConfig:
+    """用户配置结构"""
+    token: str
+    device: Dict
+    user_info: Dict
+    auto_relogin_enabled: bool = True
 
-        ql_api = qinlinAPI.QinlinAPI(device)
-        if value.get('token'):
-            ql_api.token = value['token']
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'UserConfig':
+        return cls(
+            token=data.get('token', ''),
+            device=data.get('device', {}),
+            user_info=data.get('user_info', {}),
+            auto_relogin_enabled=data.get('auto_relogin_enabled', True)
+        )
 
-        user_info = config['user'][key].get('user_info')
-        community_info = []
-        all_door = {}
-        online = False
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+
+@dataclass
+class AppConfig:
+    """应用配置结构"""
+    user: Dict[str, UserConfig] = field(default_factory=dict)
+    access_token: str = 'your-secure-token-here'
+    auto_relogin_retry: int = 2
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'AppConfig':
+        users = {}
+        for phone, user_data in data.get('user', {}).items():
+            users[phone] = UserConfig.from_dict(user_data)
         
-        # 获取或设置自动重登配置，默认为 True
-        auto_relogin_enabled = config['user'][key].get('auto_relogin_enabled', True)
-        if 'auto_relogin_enabled' not in config['user'][key]:
-            config['user'][key]['auto_relogin_enabled'] = True
+        return cls(
+            user=users,
+            access_token=data.get('access_token', 'your-secure-token-here'),
+            auto_relogin_retry=data.get('auto_relogin_retry', 2)
+        )
+
+    def to_dict(self) -> Dict:
+        return {
+            'user': {phone: user.to_dict() for phone, user in self.user.items()},
+            'access_token': self.access_token,
+            'auto_relogin_retry': self.auto_relogin_retry
+        }
+
+
+@dataclass
+class User:
+    """用户运行时数据结构"""
+    index: int
+    phone: str
+    api: qinlinAPI.QinlinAPI
+    user_info: Dict = field(default_factory=dict)
+    community_info: List[Dict] = field(default_factory=list)
+    all_door: Dict[int, List] = field(default_factory=dict)
+    is_online: bool = False
+    auto_relogin_enabled: bool = True
+
+    def to_dict(self, include_api: bool = False) -> Dict:
+        """转换为字典，可选择是否包含API对象"""
+        result = {
+            'index': self.index,
+            'phone': self.phone,
+            'user_info': self.user_info,
+            'community_info': self.community_info,
+            'all_door': self.all_door,
+            'is_online': self.is_online,
+            'auto_relogin_enabled': self.auto_relogin_enabled
+        }
+        if include_api:
+            result['api'] = self.api
+        return result
+
+
+@dataclass
+class SmsWaitingState:
+    """短信验证码等待状态"""
+    waiting: bool
+    code: Optional[str]
+    send_time: float
+    received_time: Optional[float] = None
+
+
+@dataclass
+class CacheEntry:
+    """缓存条目"""
+    timestamp: float
+    data: Any
+
+
+# ================== 配置管理器 ==================
+
+class ConfigManager: 
+    """配置文件管理器"""
+    
+    def __init__(self, config_file: str):
+        self.config_file = config_file
+        self._ensure_config_dir()
+
+    def _ensure_config_dir(self):
+        """确保配置目录存在"""
+        config_dir = os.path.dirname(self.config_file)
+        if config_dir and not os.path.exists(config_dir):
+            os.makedirs(config_dir)
+
+    def load(self) -> AppConfig:
+        """加载配置"""
+        if os.path.exists(self.config_file):
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return AppConfig.from_dict(data)
         
+        # 返回默认配置
+        config = AppConfig()
+        self.save(config)
+        return config
+
+    def save(self, config: AppConfig):
+        """保存配置"""
+        with open(self.config_file, 'w', encoding='utf-8') as f:
+            json.dump(config.to_dict(), f, indent=4, ensure_ascii=False)
+
+
+# ================== 用户管理器 ==================
+
+class UserManager: 
+    """用户管理器"""
+    
+    def __init__(self, config: AppConfig):
+        self.users: List[User] = []
+        self.config = config
+        self._load_users()
+
+    def _load_users(self):
+        """从配置加载用户"""
+        idx = 0
+        for phone, user_config in self.config.user.items():
+            try:
+                # 初始化设备和API
+                device = qinlinAPI.Device.load_from_dict(user_config.device)
+                ql_api = qinlinAPI.QinlinAPI(device)
+                
+                if user_config.token:
+                    ql_api.token = user_config.token
+
+                user_info = user_config.user_info
+                community_info = []
+                all_door = {}
+                online = False
+
+                # 尝试获取用户信息
+                try:
+                    user_info = ql_api.get_user_info()
+                    community_info = ql_api.get_community_info()
+                    
+                    for community in community_info:
+                        community_id = community['communityId']
+                        all_door[community_id] = ql_api.get_all_door_info(community_id)
+
+                    online = ql_api.check_login() > 0
+                except Exception as e:
+                    logging.exception(f"Failed to load user {phone}: {e}")
+
+                # 更新配置中的用户信息
+                user_config.user_info = user_info
+
+                # 创建用户对象
+                user = User(
+                    index=idx,
+                    phone=phone,
+                    api=ql_api,
+                    user_info=user_info,
+                    community_info=community_info,
+                    all_door=all_door,
+                    is_online=online,
+                    auto_relogin_enabled=user_config.auto_relogin_enabled
+                )
+                
+                self.users.append(user)
+                idx += 1
+
+            except Exception as e:
+                logging.exception(f"Failed to initialize user {phone}: {e}")
+
+        logging.info(f"Loaded {len(self.users)} users")
+
+    def get_user(self, idx: Optional[int] = None, phone: Optional[str] = None) -> Optional[User]:
+        """获取用户"""
+        for user in self.users:
+            if phone and user.phone == phone:
+                return user
+            if idx is not None and user.index == idx:
+                return user
+        return None
+
+    def get_user_api(self, idx: int, phone: Optional[str] = None) -> Optional[qinlinAPI.QinlinAPI]:
+        """获取用户API"""
+        user = self.get_user(idx, phone)
+        return user.api if user else None
+
+    def update_or_create_user(self, phone: str, token: str, device: Dict,
+                              user_info: Dict, community_info: List[Dict],
+                              all_door: Dict, user_api: qinlinAPI.QinlinAPI) -> User:
+        """更新或创建用户"""
+        user = self.get_user(phone=phone)
+        
+        if user:
+            # 更新现有用户
+            user.user_info = user_info
+            user.community_info = community_info
+            user.all_door = all_door
+            user.is_online = True
+            user.api = user_api
+            idx = user.index
+        else:
+            # 创建新用户
+            idx = self.users[-1].index + 1 if self.users else 0
+            user = User(
+                index=idx,
+                phone=phone,
+                api=user_api,
+                user_info=user_info,
+                community_info=community_info,
+                all_door=all_door,
+                is_online=True,
+                auto_relogin_enabled=True
+            )
+            self.users.append(user)
+
+        # 更新配置
+        self.config.user[phone] = UserConfig(
+            token=token,
+            device=device,
+            user_info=user_info,
+            auto_relogin_enabled=user.auto_relogin_enabled
+        )
+
+        return user
+
+    def get_all_users_data(self) -> List[Dict]:
+        """获取所有用户数据（不包含API对象）"""
+        return [user.to_dict(include_api=False) for user in self.users]
+
+
+# ================== 缓存管理器 ==================
+
+class CacheManager:
+    """缓存管理器"""
+    
+    def __init__(self):
+        self._store: Dict[str, CacheEntry] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: str, max_age: float) -> Optional[Any]:
+        """获取缓存"""
+        with self._lock:
+            if key in self._store:
+                entry = self._store[key]
+                if time() - entry.timestamp < max_age:
+                    logging.debug(f"Cache hit: {key}")
+                    return entry.data
+                else:
+                    del self._store[key]
+        return None
+
+    def set(self, key: str, data: Any):
+        """设置缓存"""
+        with self._lock:
+            self._store[key] = CacheEntry(timestamp=time(), data=data)
+
+    def clear(self):
+        """清空缓存"""
+        with self._lock:
+            self._store.clear()
+            logging.info("Cache cleared")
+
+    def cleanup(self, max_age: float):
+        """清理过期缓存"""
+        with self._lock:
+            current_time = time()
+            expired_keys = [
+                k for k, v in self._store.items()
+                if current_time - v.timestamp > max_age
+            ]
+            for k in expired_keys:
+                del self._store[k]
+            if expired_keys:
+                logging.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
+
+
+# ================== 短信管理器 ==================
+
+class SmsManager:
+    """短信验证码管理器"""
+    
+    def __init__(self):
+        self._waiting_states: Dict[str, SmsWaitingState] = {}
+        self._lock = threading.Lock()
+
+    def set_waiting(self, phone: str):
+        """设置等待验证码状态"""
+        with self._lock:
+            self._waiting_states[phone] = SmsWaitingState(
+                waiting=True,
+                code=None,
+                send_time=time()
+            )
+
+    def set_code(self, phone: str, code: str) -> bool:
+        """设置验证码"""
+        with self._lock:
+            if phone in self._waiting_states and self._waiting_states[phone].waiting:
+                self._waiting_states[phone].code = code
+                self._waiting_states[phone].received_time = time()
+                return True
+        return False
+
+    def get_code(self, phone: str) -> Optional[str]:
+        """获取验证码"""
+        with self._lock:
+            if phone in self._waiting_states:
+                return self._waiting_states[phone].code
+        return None
+
+    def wait_for_code(self, phone: str, timeout: float = 60) -> Optional[str]:
+        """等待验证码"""
+        start_time = time()
+        while time() - start_time < timeout: 
+            code = self.get_code(phone)
+            if code:
+                return code
+            threading.Event().wait(1)
+        return None
+
+    def clear_state(self, phone: str):
+        """清除等待状态"""
+        with self._lock:
+            if phone in self._waiting_states:
+                del self._waiting_states[phone]
+
+    def stop_waiting(self, phone: str):
+        """停止等待"""
+        with self._lock:
+            if phone in self._waiting_states:
+                self._waiting_states[phone].waiting = False
+
+
+# ================== 自动重登录管理器 ==================
+
+class AutoReloginManager: 
+    """自动重登录管理器"""
+    
+    def __init__(self, user_manager: UserManager, sms_manager: SmsManager,
+                 config_manager: ConfigManager, cache_manager: CacheManager, max_retry: int):
+        self.user_manager = user_manager
+        self.sms_manager = sms_manager
+        self.config_manager = config_manager
+        self.cache_manager = cache_manager
+        self.max_retry = max_retry
+
+    def relogin(self, user: User) -> bool:
+        """执行自动重登录"""
         try:
-            user_info = ql_api.get_user_info()
-            community_info = ql_api.get_community_info()
-            for community in community_info:
-                community_id = community['communityId']
-                all_door[community_id] = ql_api.get_all_door_info(community_id)
-
-            online = ql_api.check_login() > 0
-        except Exception as e:
-            logging.exception(e)
-            print(f"Load user failed: {e}")
-
-        config['user'][key]['user_info'] = user_info
-
-        users.append({
-            'index': idx,
-            'phone': key,
-            'user_info': user_info,
-            'community_info': community_info,
-            'all_door': all_door,
-            'is_online': online,
-            'auto_relogin_enabled': auto_relogin_enabled,
-            'api': ql_api
-        })
-        idx += 1
-
-load_users()
-
-save_config(config)
-
-print(f'users = {users}')
-
-app = Flask(__name__)
-
-def update_user(data):
-    print(f"update_user: {data}")
-    for user in users:
-        if user['phone'] == data['phone']:
-            user['index'] = data['index']
-            user['phone'] = data['phone']
-            user['user_info'] = data['user_info']
-            user['community_info'] = data['community_info']
-            user['all_door'] = data['all_door']
-            user['is_online'] = True
-            user['api'] = data['api']
-
-            config['user'][user['phone']]['user_info'] = data['user_info']
-            config['user'][user['phone']]['token'] = data['token']
-            config['user'][user['phone']]['device'] = data['device']
-            return
-
-    users.append({
-        'index': data['index'],
-        'phone': data['phone'],
-        'user_info': data['user_info'],
-        'community_info': data['community_info'],
-        'all_door': data['all_door'],
-        'is_online': True,
-        'api': data['api']
-    })
-
-    config['user'][data['phone']] = {
-        'token': data['token'],
-        'device': data['device'],
-        'user_info': data['user_info']
-    }
-
-def get_user_api(idx, phone=None):
-    user = get_user(idx, phone)
-    if user:
-        return user['api']
-    return None
-
-def get_user(idx, phone=None):
-    for user in users:
-        if phone and user['phone'] == phone:
-            return user
-        if user['index'] == idx:
-            return user
-    return None
-
-def response(code=200, message='', data=None):
-    """
-    自定义返回结果的封装函数
-    :param code: 状态码，默认为 200
-    :param message: 提示信息，默认为空字符串
-    :param data: 返回数据，默认为 None
-    :return: Response 对象
-    """
-    response_data = {
-        'code': code,
-        'message': message,
-        'data': data
-    }
-    return jsonify(response_data)
-
-# 缓存存储
-cache_store = {}
-cache_lock = threading.Lock()
-
-def cache_response(timeout=5):
-    def decorator(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            # 生成缓存key
-            cache_key = f"{f.__name__}:{str(request.args)}"
+            phone = user.phone
+            user_api = user.api
             
-            with cache_lock:
+            logging.info(f"Starting auto-relogin for user {phone}")
+            
+            for attempt in range(self.max_retry):
+                try:
+                    logging.info(f"Auto-relogin attempt {attempt + 1}/{self.max_retry} for {phone}")
+                    
+                    # 发送验证码
+                    user_api.send_sms_code(phone)
+                    logging.info(f"SMS code sent to {phone}")
+                    
+                    # 设置等待状态
+                    self.sms_manager.set_waiting(phone)
+                    
+                    # 等待验证码
+                    code = self.sms_manager.wait_for_code(phone, timeout=60)
+                    
+                    if not code:
+                        logging.warning(f"No SMS code received within 60s for {phone}, attempt {attempt + 1}")
+                        continue
+                    
+                    # 尝试登录
+                    logging.info(f"Attempting login with received code for {phone}")
+                    data = user_api.login(phone, code)
+                    token = data.get('sessionId')
+                    
+                    if not token:
+                        logging.error(f"Login failed for {phone}: no sessionId returned")
+                        continue
+                    
+                    # 登录成功，更新用户信息
+                    user_api.token = token
+                    user_info = user_api.get_user_info()
+                    community_info = user_api.get_community_info()
+                    all_door = {}
+                    
+                    for community in community_info:
+                        community_id = community['communityId']
+                        all_door[community_id] = user_api.get_all_door_info(community_id)
+                    
+                    self.user_manager.update_or_create_user(
+                        phone=phone,
+                        token=token,
+                        device=user_api.device.to_dict(),
+                        user_info=user_info,
+                        community_info=community_info,
+                        all_door=all_door,
+                        user_api=user_api
+                    )
+                    
+                    self.config_manager.save(self.user_manager.config)
+                    user.is_online = True
+                    
+                    logging.info(f"Auto-relogin successful for {phone}")
+                    
+                    # 清理缓存和等待状态
+                    self.cache_manager.clear()
+                    self.sms_manager.clear_state(phone)
+                    
+                    return True
+                    
+                except Exception as e: 
+                    logging.exception(f"Auto-relogin attempt {attempt + 1} failed for {phone}: {e}")
+                    continue
+            
+            # 所有重试都失败
+            logging.error(f"Auto-relogin failed for {phone} after {self.max_retry} attempts")
+            self.sms_manager.stop_waiting(phone)
+            
+            return False
+            
+        except Exception as e:
+            logging.exception(f"Critical error in auto_relogin: {e}")
+            return False
+
+
+# ================== 定时任务管理器 ==================
+
+class SchedulerManager:
+    """定时任务管理器"""
+    
+    def __init__(self, user_manager: UserManager, relogin_manager: AutoReloginManager):
+        self.user_manager = user_manager
+        self.relogin_manager = relogin_manager
+
+    def check_login_task(self):
+        """检查用户登录状态"""
+        for user in self.user_manager.users:
+            try:
+                if not user.is_online:
+                    continue
+                
+                if user.api.check_login() > 0:
+                    user.is_online = True
+                else:
+                    user.is_online = False
+                    
+                    # 检查是否启用自动重登
+                    if not user.auto_relogin_enabled:
+                        logging.info(f"User {user.phone} login expired but auto-relogin is disabled")
+                        continue
+                    
+                    logging.warning(f"User {user.phone} login expired, starting auto-relogin")
+                    # 在新线程中执行自动重登
+                    threading.Thread(
+                        target=self.relogin_manager.relogin,
+                        args=(user,),
+                        daemon=True
+                    ).start()
+                    
+            except Exception as e:
+                user.is_online = False
+                logging.exception(f"Check login failed for {user.phone}: {e}")
+
+    def check_users_on_startup(self):
+        """启动时检查用户登录状态"""
+        logging.info("Checking user login status on startup")
+        for user in self.user_manager.users:
+            if not user.is_online:
+                if not user.auto_relogin_enabled:
+                    logging.info(f"User {user.phone} is offline but auto-relogin is disabled")
+                    continue
+                
+                logging.warning(f"User {user.phone} is offline on startup, starting auto-relogin")
+                try:
+                    threading.Thread(
+                        target=self.relogin_manager.relogin,
+                        args=(user,),
+                        daemon=True
+                    ).start()
+                except Exception as e:
+                    logging.exception(f"Failed to start auto-relogin thread for {user.phone}: {e}")
+            else:
+                logging.info(f"User {user.phone} is online")
+
+    def start_scheduler(self):
+        """启动定时任务"""
+        scheduler = BlockingScheduler()
+        scheduler.add_job(self.check_login_task, 'interval', seconds=60)
+        scheduler.start()
+
+
+# ================== Flask应用 ==================
+
+class QinlinApp:
+    """亲邻应用主类"""
+    
+    def __init__(self):
+        # 初始化各个管理器
+        self.config_manager = ConfigManager(CONFIG_FILE)
+        self.config = self.config_manager.load()
+        self.user_manager = UserManager(self.config)
+        self.cache_manager = CacheManager()
+        self.sms_manager = SmsManager()
+        self.relogin_manager = AutoReloginManager(
+            self.user_manager,
+            self.sms_manager,
+            self.config_manager,
+            self.cache_manager,
+            self.config.auto_relogin_retry
+        )
+        self.scheduler_manager = SchedulerManager(self.user_manager, self.relogin_manager)
+        
+        # 初始化Flask应用
+        self.app = Flask(__name__)
+        self._register_routes()
+        self._register_error_handlers()
+
+    def _create_response(self, code: int, message: str, data: Any = None) -> tuple:
+        """创建响应"""
+        response = ApiResponse(code=code, message=message, data=data)
+        return jsonify(response.to_dict()), code if code >= 400 else 200
+
+    def _cache_response(self, timeout: int = 5):
+        """缓存装饰器"""
+        def decorator(f):
+            @wraps(f)
+            def decorated_function(*args, **kwargs):
+                cache_key = f"{f.__name__}:{str(request.args)}"
+                
                 # 检查缓存
-                if cache_key in cache_store:
-                    cached_time, cached_data = cache_store[cache_key]
-                    if time() - cached_time < timeout:
-                        print(f"Cache hit: {cache_key}")
-                        return cached_data
+                cached_data = self.cache_manager.get(cache_key, timeout)
+                if cached_data is not None:
+                    return cached_data
                 
                 # 执行原函数
                 result = f(*args, **kwargs)
                 
                 # 存储缓存
-                cache_store[cache_key] = (time(), result)
+                self.cache_manager.set(cache_key, result)
+                self.cache_manager.cleanup(timeout)
                 
-                # 清理过期缓存
-                current_time = time()
-                expired_keys = [k for k, v in cache_store.items() 
-                              if current_time - v[0] > timeout]
-                for k in expired_keys:
-                    del cache_store[k]
-                    
                 return result
-        return decorated_function
-    return decorator
+            return decorated_function
+        return decorator
 
-@app.before_request
-def check_access_token():
-    # 排除静态资源
-    if request.path.startswith('/static'):
+    def _check_access_token(self):
+        """检查访问令牌"""
+        # 排除静态资源
+        if request.path.startswith('/static'):
+            return None
+        
+        token = None
+        if request.path.startswith('/token:'):
+            token = request.path.split(':')[1]
+        else:
+            token = request.args.get('token')
+        
+        if not token or token != self.config.access_token:
+            return self._create_response(ResponseCode.UNAUTHORIZED.value, "未授权访问")
+        
         return None
-    
-    if request.path.startswith('/token:'):
-        token = request.path.split(':')[1]
-    else:
-        # 验证URL参数token
-        token = request.args.get('token')
-    
-    if not token or token != config.get('access_token'):
-        return response(401, "未授权访问")
-    
-    return None
 
-@app.errorhandler(Exception)
-def server_error(error):
-    logging.exception(error)
-    return response(500, str(error))
+    def _register_error_handlers(self):
+        """注册错误处理器"""
+        @self.app.errorhandler(Exception)
+        def server_error(error):
+            logging.exception(error)
+            return self._create_response(ResponseCode.SERVER_ERROR.value, str(error))
 
-@app.route('/')
-def index():
-    return render_template('index.html', token=config['access_token'])
-
-@app.route('/token:<value>')
-def index_with_token(value):
-    return render_template('index.html', token=config['access_token'])
-
-@app.route('/manifest.json')
-def send_manifest():
-    with open('static/manifest.json', 'r', encoding='utf-8') as f:
-        manifest = json.load(f)
-    manifest['start_url'] = f"/token:{config['access_token']}"
-    return jsonify(manifest)
-
-@app.route('/static/<path:path>')
-def send_static(path):
-    return send_from_directory('static', path)
-
-@app.route('/get_all_users', methods=['GET'])
-def get_all_users():
-    new_data = []
-    for user in users:
-        new_data.append({
-            'index': user['index'],
-            'phone': user['phone'],
-            'user_info': user['user_info'],
-            'community_info': user['community_info'],
-            'is_online': user['is_online'],
-            'all_door': user['all_door']
-        })
-    return response(200, "success", new_data)
-
-@app.route('/open_door', methods=['GET'])
-def open_door():
-    user_id = request.args.get("user_id")
-    door_id = request.args.get("door_id")
-    community_id = request.args.get("community_id")
-    if not door_id or not community_id or not user_id:
-        return response(500, "Please provide door_id and community_id and user_id")
-    user_api = get_user_api(int(user_id))
-    if not user_api:
-        return response(500, "User not found")
-    return response(200, "success", user_api.open_door(int(community_id), int(door_id)))
-
-@app.route('/send_sms_code', methods=['GET'])
-def send_sms_code():
-    user_id = request.args.get("user_id")
-    phone = request.args.get("phone")
-    if not user_id:
-        user_id = -1
-
-    if not phone:
-        return response(500, "Please provide phone")
-
-    user = get_user(int(user_id), phone)
-    if not user:
-        device = qinlinAPI.Device.get_default()
-        user_api = qinlinAPI.QinlinAPI(device)
-        if len(users) > 0:
-            user_id = users[-1]['index'] + 1
-        else:
-            user_id = 0
-        update_user({
-            'index': user_id,
-            'phone': phone,
-            'token': '',
-            'user_info': {},
-            'community_info': [],
-            'all_door': {},
-            'api': user_api,
-            'device': device
-        })
-    else:
-        user_api = user['api']
-        user_id = user['index']
-
-    return response(200, "success", {
-        "index": user_id,
-        "data": user_api.send_sms_code(phone)
-    })
-
-@app.route('/login', methods=['GET'])
-def login():
-    user_id = request.args.get("user_id")
-    phone = request.args.get("phone")
-    code = request.args.get("code")
-    if not phone or not code or not user_id:
-        return response(500, "Please provide phone and code")
-    user = get_user(int(user_id), phone)
-    if not user:
-        return response(500, "User not found")
-    user_api = user['api']
-    user_id = user['index']
-    data = user_api.login(phone, code)
-    token = data.get('sessionId')
-    if not token:
-        return response(500, "Login failed")
-    user_api.token = token
-
-    user_info = user_api.get_user_info()
-    community_info = user_api.get_community_info()
-    all_door = {}
-    for community in community_info:
-        community_id = community['communityId']
-        all_door[community_id] = user_api.get_all_door_info(community_id)
-    update_user({
-        'index': int(user_id),
-        'token': token,
-        'phone': phone,
-        'user_info': user_info,
-        'community_info': community_info,
-        'all_door': all_door,
-        'api': user_api,
-        'device': user_api.device.to_dict()
-    })
-    save_config(config)
-
-    with cache_lock:
-        cache_store.clear()
-
-    return response(200, "success", data)
-
-@app.route('/get_user_info', methods=['GET'])
-def get_user_info():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return response(500, "Please provide user_id")
-    api = get_user_api(int(user_id))
-    return response(200, "success", api.get_user_info())
-
-@app.route('/get_community_info', methods=['GET'])
-def get_community_info():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return response(500, "Please provide user_id")
-    api = get_user_api(int(user_id))
-    return response(200, "success", api.get_community_info())
-
-@app.route('/get_all_door_info', methods=['GET'])
-def get_all_door_info():
-    user_id = request.args.get('user_id')
-    community_id = request.args.get('community_id')
-    if not community_id or not user_id:
-        return response(500, "Please provide community_id and user_id")
-    api = get_user_api(int(user_id))
-    return response(200, "success", api.get_all_door_info(int(community_id)))
-
-@app.route('/get_user_door_info', methods=['GET'])
-def get_user_door_info():
-    user_id = request.args.get('user_id')
-    community_id = request.args.get('community_id')
-    if not community_id or not user_id:
-        return response(500, "Please provide community_id and user_id")
-    api = get_user_api(int(user_id))
-    return response(200, "success", api.get_user_door_info(int(community_id)))
-
-@app.route('/get_user_community_expiry_status', methods=['GET'])
-def get_user_community_expiry_status():
-    user_id = request.args.get('user_id')
-    community_id = request.args.get('community_id')
-    if not community_id or not user_id:
-        return response(500, "Please provide community_id and user_id")
-    api = get_user_api(int(user_id))
-    return response(200, "success", api.get_user_community_expiry_status(int(community_id)))
-
-@app.route('/get_support_password_devices', methods=['GET'])
-@cache_response(3600 * 6) # 缓存6小时
-def get_support_password_devices():
-    return response(200, "success", qinlinAPI.QinlinAPI.get_support_password_devices())
-
-@app.route('/check_login', methods=['GET'])
-def check_login():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return response(500, "Please provide user_id")
-    api = get_user_api(int(user_id))
-    return response(200, "success", api.check_login())
-
-@app.route('/logout', methods=['GET'])
-def logout():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return response(500, "Please provide user_id")
-    api = get_user_api(int(user_id))
-    return response(200, "success", api.logout())
-
-@app.route('/get_door_paddword', methods=['GET'])
-def get_door_paddword():
-    mac = request.args.get('mac')
-    community_id = request.args.get('community_id')
-    if not mac or not community_id:
-        return response(500, "Please provide mac and community_id")
-    return response(200, "success", {
-        "password": qinlinAPI.QinlinCrypto.get_open_door_password(mac, int(community_id))
-    })
-
-@app.route('/receive_sms', methods=['POST', 'GET'])
-def receive_sms():
-    """接收短信验证码的接口"""
-    if request.method == 'POST':
-        data = request.get_json(force=True, silent=True)
-        if not data:
-            return response(400, "Please provide JSON data")
-        phone = data.get('phone')
-        content = data.get('content')
-    else:  # GET
-        phone = request.args.get('phone')
-        content = request.args.get('content')
-    
-    if not phone:
-        return response(400, "Please provide phone parameter")
-    
-    if not content:
-        return response(400, "Please provide content parameter")
-    
-    logging.info(f"Received SMS for phone: {phone}, content: {content}")
-    
-    # 从短信内容中提取验证码
-    # 提取验证码：【亲邻科技】您的验证码是：000000，用于注册/登录...
-    match = re.search(r'验证码是[：:]\s*(\d{6})', content)
-    if not match:
-        return response(400, "Cannot extract verification code from SMS content")
-    
-    code = match.group(1)
-    logging.info(f"Received SMS code: {code} for phone: {phone}")
-    
-    # 查找等待验证码的用户
-    with waiting_sms_lock:
-        if phone in waiting_sms_code and waiting_sms_code[phone].get('waiting'):
-            waiting_sms_code[phone]['code'] = code
-            waiting_sms_code[phone]['received_time'] = time()
-            return response(200, "success", {
-                "phone": phone,
-                "code": code,
-                "message": "Verification code received and will be used for auto-login"
-            })
-        else:
-            return response(404, f"No user with phone {phone} is waiting for verification code")
-
-def auto_relogin(user):
-    """自动重登录逻辑"""
-    try:
-        phone = user['phone']
-        user_api = user['api']
-        max_retry = config.get('auto_relogin_retry', 2)
+    def _register_routes(self):
+        """注册路由"""
         
-        logging.info(f"Starting auto-relogin for user {phone}")
+        # 注册中间件
+        self.app.before_request(self._check_access_token)
         
-        for attempt in range(max_retry):
-            try:
-                logging.info(f"Auto-relogin attempt {attempt + 1}/{max_retry} for {phone}")
-                
-                # 发送验证码
-                user_api.send_sms_code(phone)
-                logging.info(f"SMS code sent to {phone}")
-                
-                # 标记等待验证码状态
-                with waiting_sms_lock:
-                    waiting_sms_code[phone] = {
-                        'waiting': True,
-                        'code': None,
-                        'send_time': time(),
-                        'received_time': None
-                    }
-                
-                # 等待验证码，最多60秒
-                start_time = time()
-                timeout = 60
-                code = None
-                
-                while time() - start_time < timeout:
-                    with waiting_sms_lock:
-                        if waiting_sms_code.get(phone, {}).get('code'):
-                            code = waiting_sms_code[phone]['code']
-                            break
-                    threading.Event().wait(1)  # 每秒检查一次
-                
-                if not code:
-                    logging.warning(f"No SMS code received within {timeout}s for {phone}, attempt {attempt + 1}")
-                    continue
-                
-                # 尝试登录
-                logging.info(f"Attempting login with received code for {phone}")
-                data = user_api.login(phone, code)
-                token = data.get('sessionId')
-                
-                if not token:
-                    logging.error(f"Login failed for {phone}: no sessionId returned")
-                    continue
-                
-                # 登录成功，更新用户信息
-                user_api.token = token
-                user_info = user_api.get_user_info()
-                community_info = user_api.get_community_info()
-                all_door = {}
-                for community in community_info:
-                    community_id = community['communityId']
-                    all_door[community_id] = user_api.get_all_door_info(community_id)
-                
-                update_user({
-                    'index': user['index'],
-                    'token': token,
-                    'phone': phone,
-                    'user_info': user_info,
-                    'community_info': community_info,
-                    'all_door': all_door,
-                    'api': user_api,
-                    'device': user_api.device.to_dict()
-                })
-                save_config(config)
-                
-                user['is_online'] = True
-                logging.info(f"Auto-relogin successful for {phone}")
-                
-                # 清理缓存
-                with cache_lock:
-                    cache_store.clear()
-                
-                # 清理等待状态
-                with waiting_sms_lock:
-                    if phone in waiting_sms_code:
-                        del waiting_sms_code[phone]
-                
-                return True
-                
-            except Exception as e:
-                logging.exception(f"Auto-relogin attempt {attempt + 1} failed for {phone}: {e}")
-                continue
+        # ========== 页面路由 ==========
         
-        # 所有重试都失败
-        logging.error(f"Auto-relogin failed for {phone} after {max_retry} attempts")
-        with waiting_sms_lock:
-            if phone in waiting_sms_code:
-                waiting_sms_code[phone]['waiting'] = False
+        @self.app.route('/')
+        def index():
+            return render_template('index.html', token=self.config.access_token)
+
+        @self.app.route('/token:<value>')
+        def index_with_token(value):
+            return render_template('index.html', token=self.config.access_token)
+
+        @self.app.route('/manifest.json')
+        def send_manifest():
+            with open('static/manifest.json', 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+            manifest['start_url'] = f"/token:{self.config.access_token}"
+            return jsonify(manifest)
+
+        @self.app.route('/static/<path:path>')
+        def send_static(path):
+            return send_from_directory('static', path)
+
+        # ========== API路由 ==========
         
-        return False
-    except Exception as e:
-        logging.exception(f"Critical error in auto_relogin thread: {e}")
-        return False
+        @self.app.route('/get_all_users', methods=['GET'])
+        def get_all_users():
+            data = self.user_manager.get_all_users_data()
+            return self._create_response(ResponseCode.SUCCESS.value, "success", data)
 
-def check_login_task():
-    for user in users:
-        user_api = user['api']
-        try:
-            if not user['is_online']:
-                continue
-            if user_api.check_login() > 0:
-                user['is_online'] = True
-            else:
-                user['is_online'] = False
-                
-                # 检查是否启用自动重登
-                if not user.get('auto_relogin_enabled', True):
-                    logging.info(f"User {user['phone']} login expired but auto-relogin is disabled")
-                    continue
-                
-                logging.warning(f"User {user['phone']} login expired, starting auto-relogin")
-                # 在新线程中执行自动重登，避免阻塞检查任务
-                threading.Thread(target=auto_relogin, args=(user,), daemon=True).start()
-        except Exception as e:
-            user['is_online'] = False
-            logging.exception(e)
-            print(f"Check login failed: {e}")
-
-def start_task():
-    scheduler = BlockingScheduler()
-    scheduler.add_job(check_login_task, 'interval', seconds=60)
-    scheduler.start()
-
-def check_users_on_startup():
-    """启动时检查用户登录状态并触发自动重登"""
-    logging.info("Checking user login status on startup")
-    for user in users:
-        if not user['is_online']:
-            if not user.get('auto_relogin_enabled', True):
-                logging.info(f"User {user['phone']} is offline but auto-relogin is disabled")
-                continue
+        @self.app.route('/open_door', methods=['GET'])
+        def open_door():
+            user_id = request.args.get("user_id")
+            door_id = request.args.get("door_id")
+            community_id = request.args.get("community_id")
             
-            logging.warning(f"User {user['phone']} is offline on startup, starting auto-relogin")
-            # 在后台线程中执行自动重登，避免阻塞启动
-            try:
-                t = threading.Thread(target=auto_relogin, args=(user,), daemon=True)
-                t.start()
-                logging.info(f"Auto-relogin thread started for {user['phone']}")
-            except Exception as e:
-                logging.exception(f"Failed to start auto-relogin thread for {user['phone']}: {e}")
-        else:
-            logging.info(f"User {user['phone']} is online")
+            if not all([door_id, community_id, user_id]):
+                return self._create_response(
+                    ResponseCode.BAD_REQUEST.value,
+                    "Please provide door_id and community_id and user_id"
+                )
+            
+            user_api = self.user_manager.get_user_api(int(user_id))
+            if not user_api:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            result = user_api.open_door(int(community_id), int(door_id))
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/send_sms_code', methods=['GET'])
+        def send_sms_code():
+            user_id = request.args.get("user_id", -1)
+            phone = request.args.get("phone")
+            
+            if not phone:
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide phone")
+
+            user = self.user_manager.get_user(int(user_id), phone)
+            
+            if not user:
+                # 创建新用户
+                device = qinlinAPI.Device.get_default()
+                user_api = qinlinAPI.QinlinAPI(device)
+                user_id = self.user_manager.users[-1].index + 1 if self.user_manager.users else 0
+                
+                user = self.user_manager.update_or_create_user(
+                    phone=phone,
+                    token='',
+                    device=device.to_dict(),
+                    user_info={},
+                    community_info=[],
+                    all_door={},
+                    user_api=user_api
+                )
+            else:
+                user_api = user.api
+                user_id = user.index
+
+            result = user_api.send_sms_code(phone)
+            return self._create_response(ResponseCode.SUCCESS.value, "success", {
+                "index": user_id,
+                "data": result
+            })
+
+        @self.app.route('/login', methods=['GET'])
+        def login():
+            phone = request.args.get("phone")
+            code = request.args.get("code")
+            user_id = request.args.get("user_id")
+            
+            if not all([phone, code, user_id]):
+                return self._create_response(
+                    ResponseCode.BAD_REQUEST.value,
+                    "Please provide phone and code and user_id"
+                )
+            
+            user = self.user_manager.get_user(int(user_id), phone)
+            if not user:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            user_api = user.api
+            data = user_api.login(phone, code)
+            token = data.get('sessionId')
+            
+            if not token: 
+                return self._create_response(ResponseCode.SERVER_ERROR.value, "Login failed")
+            
+            user_api.token = token
+            user_info = user_api.get_user_info()
+            community_info = user_api.get_community_info()
+            all_door = {}
+            
+            for community in community_info: 
+                community_id = community['communityId']
+                all_door[community_id] = user_api.get_all_door_info(community_id)
+            
+            self.user_manager.update_or_create_user(
+                phone=phone,
+                token=token,
+                device=user_api.device.to_dict(),
+                user_info=user_info,
+                community_info=community_info,
+                all_door=all_door,
+                user_api=user_api
+            )
+            
+            self.config_manager.save(self.user_manager.config)
+            self.cache_manager.clear()
+            
+            return self._create_response(ResponseCode.SUCCESS.value, "success", data)
+
+        @self.app.route('/get_user_info', methods=['GET'])
+        def get_user_info():
+            user_id = request.args.get('user_id')
+            if not user_id:
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide user_id")
+            
+            api = self.user_manager.get_user_api(int(user_id))
+            if not api:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            result = api.get_user_info()
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/get_community_info', methods=['GET'])
+        def get_community_info():
+            user_id = request.args.get('user_id')
+            if not user_id:
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide user_id")
+            
+            api = self.user_manager.get_user_api(int(user_id))
+            if not api:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            result = api.get_community_info()
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/get_all_door_info', methods=['GET'])
+        def get_all_door_info():
+            user_id = request.args.get('user_id')
+            community_id = request.args.get('community_id')
+            
+            if not all([community_id, user_id]):
+                return self._create_response(
+                    ResponseCode.BAD_REQUEST.value,
+                    "Please provide community_id and user_id"
+                )
+            
+            api = self.user_manager.get_user_api(int(user_id))
+            if not api:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            result = api.get_all_door_info(int(community_id))
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/get_user_door_info', methods=['GET'])
+        def get_user_door_info():
+            user_id = request.args.get('user_id')
+            community_id = request.args.get('community_id')
+            
+            if not all([community_id, user_id]):
+                return self._create_response(
+                    ResponseCode.BAD_REQUEST.value,
+                    "Please provide community_id and user_id"
+                )
+            
+            api = self.user_manager.get_user_api(int(user_id))
+            if not api:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            result = api.get_user_door_info(int(community_id))
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/get_user_community_expiry_status', methods=['GET'])
+        def get_user_community_expiry_status():
+            user_id = request.args.get('user_id')
+            community_id = request.args.get('community_id')
+            
+            if not all([community_id, user_id]):
+                return self._create_response(
+                    ResponseCode.BAD_REQUEST.value,
+                    "Please provide community_id and user_id"
+                )
+            
+            api = self.user_manager.get_user_api(int(user_id))
+            if not api: 
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            result = api.get_user_community_expiry_status(int(community_id))
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/get_support_password_devices', methods=['GET'])
+        @self._cache_response(3600 * 6)  # 缓存6小时
+        def get_support_password_devices():
+            result = qinlinAPI.QinlinAPI.get_support_password_devices()
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/check_login', methods=['GET'])
+        def check_login():
+            user_id = request.args.get('user_id')
+            if not user_id:
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide user_id")
+            
+            api = self.user_manager.get_user_api(int(user_id))
+            if not api:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            result = api.check_login()
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/logout', methods=['GET'])
+        def logout():
+            user_id = request.args.get('user_id')
+            if not user_id:
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide user_id")
+            
+            api = self.user_manager.get_user_api(int(user_id))
+            if not api:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            result = api.logout()
+            return self._create_response(ResponseCode.SUCCESS.value, "success", result)
+
+        @self.app.route('/get_door_paddword', methods=['GET'])
+        def get_door_password():
+            mac = request.args.get('mac')
+            community_id = request.args.get('community_id')
+            
+            if not all([mac, community_id]):
+                return self._create_response(
+                    ResponseCode.BAD_REQUEST.value,
+                    "Please provide mac and community_id"
+                )
+            
+            password = qinlinAPI.QinlinCrypto.get_open_door_password(mac, int(community_id))
+            return self._create_response(ResponseCode.SUCCESS.value, "success", {
+                "password": password
+            })
+
+        @self.app.route('/receive_sms', methods=['POST', 'GET'])
+        def receive_sms():
+            """接收短信验证码"""
+            if request.method == 'POST':
+                data = request.get_json(force=True, silent=True)
+                if not data:
+                    return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide JSON data")
+                phone = data.get('phone')
+                content = data.get('content')
+            else:
+                phone = request.args.get('phone')
+                content = request.args.get('content')
+            
+            if not phone: 
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide phone parameter")
+            
+            if not content:
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide content parameter")
+            
+            logging.info(f"Received SMS for phone: {phone}, content: {content}")
+            
+            # 提取验证码
+            match = re.search(r'验证码是[：:]\s*(\d{6})', content)
+            if not match:
+                return self._create_response(
+                    ResponseCode.BAD_REQUEST.value,
+                    "Cannot extract verification code from SMS content"
+                )
+            
+            code = match.group(1)
+            logging.info(f"Received SMS code: {code} for phone: {phone}")
+            
+            # 设置验证码
+            if self.sms_manager.set_code(phone, code):
+                return self._create_response(ResponseCode.SUCCESS.value, "success", {
+                    "phone": phone,
+                    "code": code,
+                    "message": "Verification code received and will be used for auto-login"
+                })
+            else:
+                return self._create_response(
+                    ResponseCode.NOT_FOUND.value,
+                    f"No user with phone {phone} is waiting for verification code"
+                )
+
+    def run(self):
+        """运行应用"""
+        logging.info(f'Access token: {self.config.access_token}')
+        
+        # 启动时检查用户登录状态
+        self.scheduler_manager.check_users_on_startup()
+        
+        # 启动定时任务
+        threading.Thread(target=self.scheduler_manager.start_scheduler, daemon=True).start()
+        
+        # 运行Flask应用
+        self.app.run(host=HOST, port=PORT, debug=DEBUG)
+
+
+# ================== 主程序入口 ==================
 
 if __name__ == "__main__":
-    print(f'token = {config["access_token"]}')
-
-    # 启动时检查用户登录状态
-    check_users_on_startup()
-
-    threading.Thread(target=start_task).start()
-
-    app.run(
-        host=host,
-        port=port,
-        debug=debug
-    )
+    app = QinlinApp()
+    app.run()
