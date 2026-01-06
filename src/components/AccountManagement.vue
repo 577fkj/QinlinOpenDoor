@@ -25,6 +25,15 @@
             <div class="info-text">
               <div class="phone">{{ user.phone }}</div>
               <div class="username">{{ user.user_info?.realName || user.user_info?.userName || '未知' }}</div>
+              <div class="auto-relogin-setting">
+                <el-switch
+                  v-model="user.auto_relogin_enabled"
+                  @change="handleAutoReloginChange(user)"
+                  size="small"
+                  active-text="自动重登"
+                  :loading="user.updating"
+                />
+              </div>
             </div>
           </div>
           <div class="account-actions">
@@ -389,6 +398,21 @@ const showDetail = (user) => {
   showDetailDialog.value = true
 }
 
+// 处理自动重登开关变化
+const handleAutoReloginChange = async (user) => {
+  try {
+    user.updating = true
+    await api.updateAutoRelogin(user.index, user.auto_relogin_enabled)
+    ElMessage.success(`自动重登已${user.auto_relogin_enabled ? '开启' : '关闭'}`)
+  } catch (error) {
+    console.error('更新自动重登配置失败:', error)
+    user.auto_relogin_enabled = !user.auto_relogin_enabled
+    ElMessage.error('更新失败')
+  } finally {
+    user.updating = false
+  }
+}
+
 // 关闭主对话框
 const handleClose = () => {
   visible.value = false
@@ -428,6 +452,7 @@ const handleClose = () => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1;
 }
 
 .phone {
@@ -439,6 +464,10 @@ const handleClose = () => {
 .username {
   font-size: 14px;
   color: #909399;
+}
+
+.auto-relogin-setting {
+  margin-top: 4px;
 }
 
 .account-actions {
@@ -453,6 +482,10 @@ const handleClose = () => {
 :deep(.el-input-group__append .el-button) {
   border: none;
   margin: 0;
+}
+
+:deep(.el-badge__content.is-fixed) {
+  transform: translateY(-50%) translate(50%);
 }
 
 /* 移动端优化 */

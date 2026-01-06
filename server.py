@@ -111,6 +111,7 @@ class User:
     all_door: Dict[int, List] = field(default_factory=dict)
     is_online: bool = False
     auto_relogin_enabled: bool = True
+    received_sms_code: Optional[str] = None
 
     def to_dict(self, include_api: bool = False) -> Dict:
         """转换为字典，可选择是否包含API对象"""
@@ -684,6 +685,29 @@ class QinlinApp:
         def get_all_users():
             data = self.user_manager.get_all_users_data()
             return self._create_response(ResponseCode.SUCCESS.value, "success", data)
+        
+        @self.app.route('/update_auto_relogin', methods=['POST'])
+        def update_auto_relogin():
+            data = request.get_json()
+            user_id = data.get('user_id')
+            enabled = data.get('enabled')
+            
+            if user_id is None or enabled is None:
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Missing parameters")
+            
+            user = self.user_manager.get_user(idx=int(user_id))
+            if not user:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            user.auto_relogin_enabled = enabled
+            
+            # 更新配置文件
+            if user.phone in self.config.user:
+                self.config.user[user.phone].auto_relogin_enabled = enabled
+                self.config_manager.save(self.config)
+            
+            logging.info(f"Updated auto_relogin_enabled for user {user.phone}: {enabled}")
+            return self._create_response(ResponseCode.SUCCESS.value, "success")
 
         @self.app.route('/open_door', methods=['GET'])
         def open_door():
@@ -738,6 +762,22 @@ class QinlinApp:
                 "index": user_id,
                 "data": result
             })
+
+        @self.app.route('/get_sms_code', methods=['GET'])
+        def get_sms_code():
+            user_id = request.args.get("user_id")
+            if not user_id:
+                return self._create_response(ResponseCode.BAD_REQUEST.value, "Please provide user_id")
+            
+            user = self.user_manager.get_user(idx=int(user_id))
+            if not user:
+                return self._create_response(ResponseCode.NOT_FOUND.value, "User not found")
+            
+            code = user.received_sms_code
+            if code:
+                user.received_sms_code = None
+            
+            return self._create_response(ResponseCode.SUCCESS.value, "success", {"code": code})
 
         @self.app.route('/login', methods=['GET'])
         def login():
@@ -947,7 +987,15 @@ class QinlinApp:
             logging.info(f"Received SMS code: {code} for phone: {phone}")
             
             # 设置验证码
-            if self.sms_manager.set_code(phone, code):
+            sms_set = self.sms_manager.set_code(phone, code)
+            
+            # 同时设置用户的临时验证码，用于前端轮询
+            user = self.user_manager.get_user(-1, phone)
+            if user:
+                user.received_sms_code = code
+                logging.info(f"Set received_sms_code for user {user.index}")
+            
+            if sms_set:
                 return self._create_response(ResponseCode.SUCCESS.value, "success", {
                     "phone": phone,
                     "code": code,

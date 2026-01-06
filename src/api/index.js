@@ -72,6 +72,19 @@ export const api = {
   // 获取支持密码的设备列表
   getSupportPasswordDevices() {
     return request.get(addTokenToUrl('/get_support_password_devices'))
+  },
+
+  // 获取验证码（轮询）
+  getSmsCode(userId) {
+    return request.get(addTokenToUrl(`/get_sms_code?user_id=${userId}`))
+  },
+
+  // 更新自动重登配置
+  updateAutoRelogin(userId, enabled) {
+    return request.post(addTokenToUrl('/update_auto_relogin'), {
+      user_id: userId,
+      enabled: enabled
+    })
   }
 }
 

@@ -60,11 +60,15 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Phone, Message } from '@element-plus/icons-vue'
 import api from '../api'
 import { useUserStore } from '../stores/user'
+
+onUnmounted(() => {
+  stopPolling()
+})
 
 const emit = defineEmits(['login-success'])
 const userStore = useUserStore()
@@ -79,6 +83,7 @@ const loginForm = reactive({
 const countdown = ref(0)
 const sendingCode = ref(false)
 const logging = ref(false)
+const pollingTimer = ref(null)
 
 // 表单验证规则
 const rules = {
@@ -102,9 +107,10 @@ const handleSendCode = async () => {
     loginForm.userId = data.index
     
     if (data.data.code === 0) {
-      ElMessage.success('验证码已发送')
+      ElMessage.success('验证码已发送，等待自动填充...')
       countdown.value = 60
       startCountdown()
+      startPolling()
     } else {
       ElMessage.error(data.data.data.message || '发送失败')
     }
@@ -112,6 +118,38 @@ const handleSendCode = async () => {
     console.error('发送验证码失败:', error)
   } finally {
     sendingCode.value = false
+  }
+}
+
+// 开始轮询验证码
+const startPolling = () => {
+  stopPolling()
+  pollingTimer.value = setInterval(async () => {
+    try {
+      const result = await api.getSmsCode(loginForm.userId)
+      if (result.code) {
+        loginForm.code = result.code
+        ElMessage.success('验证码已自动填充')
+        stopPolling()
+        setTimeout(() => {
+          handleLogin()
+        }, 500)
+      }
+    } catch (error) {
+      console.error('轮询验证码失败:', error)
+    }
+  }, 2000)
+  
+  setTimeout(() => {
+    stopPolling()
+  }, 60000)
+}
+
+// 停止轮询
+const stopPolling = () => {
+  if (pollingTimer.value) {
+    clearInterval(pollingTimer.value)
+    pollingTimer.value = null
   }
 }
 
