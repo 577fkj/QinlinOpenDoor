@@ -7,6 +7,14 @@ from time import time
 import threading
 from apscheduler.schedulers.blocking import BlockingScheduler
 import logging
+import re
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 host = os.getenv('HOST', '0.0.0.0')
 port = os.getenv('PORT', 5000)
@@ -24,6 +32,7 @@ def load_config():
     data = {
         'user': {},
         'access_token': 'your-secure-token-here',  # 添加访问token
+        'auto_relogin_retry': 2,  # 自动重登重试次数
     }
     save_config(data)
     return data
@@ -36,6 +45,10 @@ def save_config(conf):
 config = load_config()
 
 users = []
+
+# 等待验证码的状态管理
+waiting_sms_code = {}
+waiting_sms_lock = threading.Lock()
 
 def load_users():
     idx = 0
@@ -51,6 +64,12 @@ def load_users():
         community_info = []
         all_door = {}
         online = False
+        
+        # 获取或设置自动重登配置，默认为 True
+        auto_relogin_enabled = config['user'][key].get('auto_relogin_enabled', True)
+        if 'auto_relogin_enabled' not in config['user'][key]:
+            config['user'][key]['auto_relogin_enabled'] = True
+        
         try:
             user_info = ql_api.get_user_info()
             community_info = ql_api.get_community_info()
@@ -72,6 +91,7 @@ def load_users():
             'community_info': community_info,
             'all_door': all_door,
             'is_online': online,
+            'auto_relogin_enabled': auto_relogin_enabled,
             'api': ql_api
         })
         idx += 1
@@ -401,6 +421,150 @@ def get_door_paddword():
         "password": qinlinAPI.QinlinCrypto.get_open_door_password(mac, int(community_id))
     })
 
+@app.route('/receive_sms', methods=['POST', 'GET'])
+def receive_sms():
+    """接收短信验证码的接口"""
+    if request.method == 'POST':
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return response(400, "Please provide JSON data")
+        phone = data.get('phone')
+        content = data.get('content')
+    else:  # GET
+        phone = request.args.get('phone')
+        content = request.args.get('content')
+    
+    if not phone:
+        return response(400, "Please provide phone parameter")
+    
+    if not content:
+        return response(400, "Please provide content parameter")
+    
+    logging.info(f"Received SMS for phone: {phone}, content: {content}")
+    
+    # 从短信内容中提取验证码
+    # 提取验证码：【亲邻科技】您的验证码是：000000，用于注册/登录...
+    match = re.search(r'验证码是[：:]\s*(\d{6})', content)
+    if not match:
+        return response(400, "Cannot extract verification code from SMS content")
+    
+    code = match.group(1)
+    logging.info(f"Received SMS code: {code} for phone: {phone}")
+    
+    # 查找等待验证码的用户
+    with waiting_sms_lock:
+        if phone in waiting_sms_code and waiting_sms_code[phone].get('waiting'):
+            waiting_sms_code[phone]['code'] = code
+            waiting_sms_code[phone]['received_time'] = time()
+            return response(200, "success", {
+                "phone": phone,
+                "code": code,
+                "message": "Verification code received and will be used for auto-login"
+            })
+        else:
+            return response(404, f"No user with phone {phone} is waiting for verification code")
+
+def auto_relogin(user):
+    """自动重登录逻辑"""
+    try:
+        phone = user['phone']
+        user_api = user['api']
+        max_retry = config.get('auto_relogin_retry', 2)
+        
+        logging.info(f"Starting auto-relogin for user {phone}")
+        
+        for attempt in range(max_retry):
+            try:
+                logging.info(f"Auto-relogin attempt {attempt + 1}/{max_retry} for {phone}")
+                
+                # 发送验证码
+                user_api.send_sms_code(phone)
+                logging.info(f"SMS code sent to {phone}")
+                
+                # 标记等待验证码状态
+                with waiting_sms_lock:
+                    waiting_sms_code[phone] = {
+                        'waiting': True,
+                        'code': None,
+                        'send_time': time(),
+                        'received_time': None
+                    }
+                
+                # 等待验证码，最多60秒
+                start_time = time()
+                timeout = 60
+                code = None
+                
+                while time() - start_time < timeout:
+                    with waiting_sms_lock:
+                        if waiting_sms_code.get(phone, {}).get('code'):
+                            code = waiting_sms_code[phone]['code']
+                            break
+                    threading.Event().wait(1)  # 每秒检查一次
+                
+                if not code:
+                    logging.warning(f"No SMS code received within {timeout}s for {phone}, attempt {attempt + 1}")
+                    continue
+                
+                # 尝试登录
+                logging.info(f"Attempting login with received code for {phone}")
+                data = user_api.login(phone, code)
+                token = data.get('sessionId')
+                
+                if not token:
+                    logging.error(f"Login failed for {phone}: no sessionId returned")
+                    continue
+                
+                # 登录成功，更新用户信息
+                user_api.token = token
+                user_info = user_api.get_user_info()
+                community_info = user_api.get_community_info()
+                all_door = {}
+                for community in community_info:
+                    community_id = community['communityId']
+                    all_door[community_id] = user_api.get_all_door_info(community_id)
+                
+                update_user({
+                    'index': user['index'],
+                    'token': token,
+                    'phone': phone,
+                    'user_info': user_info,
+                    'community_info': community_info,
+                    'all_door': all_door,
+                    'api': user_api,
+                    'device': user_api.device.to_dict()
+                })
+                save_config(config)
+                
+                user['is_online'] = True
+                logging.info(f"Auto-relogin successful for {phone}")
+                
+                # 清理缓存
+                with cache_lock:
+                    cache_store.clear()
+                
+                # 清理等待状态
+                with waiting_sms_lock:
+                    if phone in waiting_sms_code:
+                        del waiting_sms_code[phone]
+                
+                return True
+                
+            except Exception as e:
+                logging.exception(f"Auto-relogin attempt {attempt + 1} failed for {phone}: {e}")
+                continue
+        
+        # 所有重试都失败
+        logging.error(f"Auto-relogin failed for {phone} after {max_retry} attempts")
+        with waiting_sms_lock:
+            if phone in waiting_sms_code:
+                waiting_sms_code[phone]['waiting'] = False
+        
+        return False
+    except Exception as e:
+        logging.exception(f"Critical error in auto_relogin thread: {e}")
+        return False
+
 def check_login_task():
     for user in users:
         user_api = user['api']
@@ -411,6 +575,15 @@ def check_login_task():
                 user['is_online'] = True
             else:
                 user['is_online'] = False
+                
+                # 检查是否启用自动重登
+                if not user.get('auto_relogin_enabled', True):
+                    logging.info(f"User {user['phone']} login expired but auto-relogin is disabled")
+                    continue
+                
+                logging.warning(f"User {user['phone']} login expired, starting auto-relogin")
+                # 在新线程中执行自动重登，避免阻塞检查任务
+                threading.Thread(target=auto_relogin, args=(user,), daemon=True).start()
         except Exception as e:
             user['is_online'] = False
             logging.exception(e)
@@ -421,8 +594,31 @@ def start_task():
     scheduler.add_job(check_login_task, 'interval', seconds=60)
     scheduler.start()
 
+def check_users_on_startup():
+    """启动时检查用户登录状态并触发自动重登"""
+    logging.info("Checking user login status on startup")
+    for user in users:
+        if not user['is_online']:
+            if not user.get('auto_relogin_enabled', True):
+                logging.info(f"User {user['phone']} is offline but auto-relogin is disabled")
+                continue
+            
+            logging.warning(f"User {user['phone']} is offline on startup, starting auto-relogin")
+            # 在后台线程中执行自动重登，避免阻塞启动
+            try:
+                t = threading.Thread(target=auto_relogin, args=(user,), daemon=True)
+                t.start()
+                logging.info(f"Auto-relogin thread started for {user['phone']}")
+            except Exception as e:
+                logging.exception(f"Failed to start auto-relogin thread for {user['phone']}: {e}")
+        else:
+            logging.info(f"User {user['phone']} is online")
+
 if __name__ == "__main__":
     print(f'token = {config["access_token"]}')
+
+    # 启动时检查用户登录状态
+    check_users_on_startup()
 
     threading.Thread(target=start_task).start()
 
