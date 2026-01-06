@@ -661,6 +661,18 @@ class QinlinApp:
                 manifest = json.load(f)
             manifest['start_url'] = f"/token:{self.config.access_token}"
             return jsonify(manifest)
+        
+        @self.app.route('/sw.js')
+        def send_service_worker():
+            with open('static/js/sw.js', 'r', encoding='utf-8') as f:
+                sw_content = f.read()
+            sw_content = re.sub(r'{{token}}', self.config.access_token, sw_content)
+            response = self.app.response_class(
+                response=sw_content,
+                status=200,
+                mimetype='application/javascript'
+            )
+            return response
 
         @self.app.route('/static/<path:path>')
         def send_static(path):

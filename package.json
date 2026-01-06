@@ -1,0 +1,23 @@
+{
+  "name": "qinling-door-system",
+  "version": "1.0.0",
+  "description": "智能门禁系统前端",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node build-post.js",
+    "preview": "vite preview",
+    "clean": "node clean-old.js"
+  },
+  "dependencies": {
+    "vue": "^3.4.15",
+    "element-plus": "^2.5.4",
+    "axios": "^1.6.5",
+    "pinia": "^2.1.7",
+    "md5": "^2.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.3",
+    "vite": "^5.0.12"
+  }
+}
