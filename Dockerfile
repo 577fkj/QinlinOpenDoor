@@ -19,6 +19,7 @@ COPY src ./src
 COPY public ./public
 
 # 安装 npm 依赖并构建前端
+RUN npm config set registry https://registry.npmmirror.com
 RUN npm install
 RUN npm run build
 

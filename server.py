@@ -435,10 +435,10 @@ class AutoReloginManager:
                     self.sms_manager.set_waiting(phone)
                     
                     # 等待验证码
-                    code = self.sms_manager.wait_for_code(phone, timeout=60)
+                    code = self.sms_manager.wait_for_code(phone, timeout=180)
                     
                     if not code:
-                        logging.warning(f"No SMS code received within 60s for {phone}, attempt {attempt + 1}")
+                        logging.warning(f"No SMS code received within 180s for {phone}, attempt {attempt + 1}")
                         continue
                     
                     # 尝试登录

@@ -142,7 +142,7 @@ const startPolling = () => {
   
   setTimeout(() => {
     stopPolling()
-  }, 60000)
+  }, 180000)
 }
 
 // 停止轮询
