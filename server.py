@@ -628,6 +628,9 @@ class QinlinApp:
         else:
             token = request.args.get('token')
         
+        if self.config.access_token == '':
+            return None
+        
         if not token or token != self.config.access_token:
             return self._create_response(ResponseCode.UNAUTHORIZED.value, "未授权访问")
         
@@ -638,7 +641,12 @@ class QinlinApp:
         @self.app.errorhandler(Exception)
         def server_error(error):
             logging.exception(error)
-            return self._create_response(ResponseCode.SERVER_ERROR.value, str(error))
+            response = ApiResponse(
+                code=ResponseCode.SERVER_ERROR.value,
+                message=str(error),
+                data=None
+            )
+            return jsonify(response.to_dict()), 200
 
     def _register_routes(self):
         """注册路由"""
@@ -758,6 +766,10 @@ class QinlinApp:
                 user_id = user.index
 
             result = user_api.send_sms_code(phone)
+            
+            # 添加到短信等待列表
+            self.sms_manager.set_waiting(phone)
+            
             return self._create_response(ResponseCode.SUCCESS.value, "success", {
                 "index": user_id,
                 "data": result
@@ -777,7 +789,14 @@ class QinlinApp:
             if code:
                 user.received_sms_code = None
             
-            return self._create_response(ResponseCode.SUCCESS.value, "success", {"code": code})
+            login_success = False
+            try:
+                if user.api.check_login() > 0:
+                    login_success = True
+            except Exception:
+                pass
+            
+            return self._create_response(ResponseCode.SUCCESS.value, "success", {"code": code, "login_success": login_success})
 
         @self.app.route('/login', methods=['GET'])
         def login():

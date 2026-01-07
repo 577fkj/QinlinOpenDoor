@@ -226,6 +226,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  stopReLoginPolling()
+  stopAddPolling()
 })
 
 // 添加账号相关
@@ -240,6 +242,13 @@ const addCountdown = ref(0)
 const sendingAddCode = ref(false)
 const adding = ref(false)
 
+// 监听添加账号对话框关闭
+watch(showAddDialog, (newVal) => {
+  if (!newVal) {
+    stopAddPolling()
+  }
+})
+
 const addRules = {
   phone: [
     { required: true, message: '请输入手机号', trigger: 'blur' },
@@ -253,6 +262,13 @@ const addRules = {
 
 // 重新登录相关
 const showReLoginDialog = ref(false)
+
+// 监听重新登录对话框关闭
+watch(showReLoginDialog, (newVal) => {
+  if (!newVal) {
+    stopReLoginPolling()
+  }
+})
 const reLoginFormRef = ref(null)
 const reLoginForm = reactive({
   phone: '',
@@ -262,6 +278,8 @@ const reLoginForm = reactive({
 const reLoginCountdown = ref(0)
 const sendingReLoginCode = ref(false)
 const reLogging = ref(false)
+const reLoginPollingTimer = ref(null)
+const addPollingTimer = ref(null)
 
 const reLoginRules = {
   code: [
@@ -294,9 +312,10 @@ const sendAddCode = async () => {
     addForm.userId = data.index
     
     if (data.data.code === 0) {
-      ElMessage.success('验证码已发送')
+      ElMessage.success('验证码已发送，等待自动填充...')
       addCountdown.value = 60
       startCountdown(addCountdown)
+      startAddPolling()
     } else {
       ElMessage.error(data.data.data.message || '发送失败')
     }
@@ -304,6 +323,38 @@ const sendAddCode = async () => {
     console.error('发送验证码失败:', error)
   } finally {
     sendingAddCode.value = false
+  }
+}
+
+// 开始轮询添加账号验证码
+const startAddPolling = () => {
+  stopAddPolling()
+  addPollingTimer.value = setInterval(async () => {
+    try {
+      const result = await api.getSmsCode(addForm.userId)
+      if (result.code) {
+        addForm.code = result.code
+        ElMessage.success('验证码已自动填充')
+        stopAddPolling()
+        setTimeout(() => {
+          handleAdd()
+        }, 500)
+      }
+    } catch (error) {
+      console.error('轮询验证码失败:', error)
+    }
+  }, 2000)
+  
+  setTimeout(() => {
+    stopAddPolling()
+  }, 180000)
+}
+
+// 停止轮询添加账号验证码
+const stopAddPolling = () => {
+  if (addPollingTimer.value) {
+    clearInterval(addPollingTimer.value)
+    addPollingTimer.value = null
   }
 }
 
@@ -352,9 +403,10 @@ const sendReLoginCode = async () => {
     const data = await api.sendSmsCode(reLoginForm.phone, reLoginForm.userId)
     
     if (data.data.code === 0) {
-      ElMessage.success('验证码已发送')
+      ElMessage.success('验证码已发送，等待自动填充...')
       reLoginCountdown.value = 60
       startCountdown(reLoginCountdown)
+      startReLoginPolling()
     } else {
       ElMessage.error(data.data.data.message || '发送失败')
     }
@@ -362,6 +414,38 @@ const sendReLoginCode = async () => {
     console.error('发送验证码失败:', error)
   } finally {
     sendingReLoginCode.value = false
+  }
+}
+
+// 开始轮询重新登录验证码
+const startReLoginPolling = () => {
+  stopReLoginPolling()
+  reLoginPollingTimer.value = setInterval(async () => {
+    try {
+      const result = await api.getSmsCode(reLoginForm.userId)
+      if (result.code) {
+        reLoginForm.code = result.code
+        ElMessage.success('验证码已自动填充')
+        stopReLoginPolling()
+        setTimeout(() => {
+          handleReLogin()
+        }, 500)
+      }
+    } catch (error) {
+      console.error('轮询验证码失败:', error)
+    }
+  }, 2000)
+  
+  setTimeout(() => {
+    stopReLoginPolling()
+  }, 180000)
+}
+
+// 停止轮询重新登录验证码
+const stopReLoginPolling = () => {
+  if (reLoginPollingTimer.value) {
+    clearInterval(reLoginPollingTimer.value)
+    reLoginPollingTimer.value = null
   }
 }
 

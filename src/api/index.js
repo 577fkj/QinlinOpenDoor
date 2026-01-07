@@ -31,14 +31,33 @@ const request = axios.create({
 request.interceptors.response.use(
   response => {
     const data = response.data
+    // 检查业务状态码
     if (data.code !== 200) {
-      ElMessage.error(data.message || '请求失败')
-      return Promise.reject(new Error(data.message || '请求失败'))
+      const errorMsg = data.message || '请求失败'
+      ElMessage.error(errorMsg)
+      return Promise.reject(new Error(errorMsg))
     }
     return data.data
   },
   error => {
-    ElMessage.error(error.message || '网络错误')
+    // 处理HTTP错误
+    let errorMsg = '网络错误'
+    if (error.response) {
+      // 服务器返回了错误响应
+      const data = error.response.data
+      if (data && data.message) {
+        errorMsg = data.message
+      } else if (error.response.status) {
+        errorMsg = `请求错误 ${error.response.status}`
+      }
+    } else if (error.request) {
+      // 请求已发出但没有收到响应
+      errorMsg = '服务器无响应'
+    } else {
+      // 请求配置出错
+      errorMsg = error.message || '请求配置错误'
+    }
+    ElMessage.error(errorMsg)
     return Promise.reject(error)
   }
 )

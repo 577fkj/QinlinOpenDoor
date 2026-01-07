@@ -46,6 +46,14 @@ export default defineConfig({
       '/get_support_password_devices': {
         target: 'http://localhost:5000',
         changeOrigin: true
+      },
+      '/update_auto_relogin': {
+        target: 'http://localhost:5000',
+        changeOrigin: true
+      },
+      '/get_sms_code': {
+        target: 'http://localhost:5000',
+        changeOrigin: true
       }
     }
   },

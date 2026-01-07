@@ -131,8 +131,14 @@ const startPolling = () => {
         loginForm.code = result.code
         ElMessage.success('验证码已自动填充')
         stopPolling()
-        setTimeout(() => {
-          handleLogin()
+        setTimeout(async () => {
+          if (result.login_success) {
+            ElMessage.success('登录成功')
+            await userStore.loadUsers()
+            emit('login-success')
+          } else {
+            ElMessage.error('自动登录失败，请手动登录')
+          }
         }, 500)
       }
     } catch (error) {
@@ -141,6 +147,7 @@ const startPolling = () => {
   }, 2000)
   
   setTimeout(() => {
+    ElMessage.error('自动获取验证码超时')
     stopPolling()
   }, 180000)
 }
