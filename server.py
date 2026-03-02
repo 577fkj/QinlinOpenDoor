@@ -513,6 +513,10 @@ class SchedulerManager:
                     continue
                 
                 if user.api.check_login() > 0:
+                    # 调用一些接口来保持会话活跃
+                    user.api.get_user_info()
+                    user.api.get_community_info()
+                    user.api.get_all_door_info()
                     user.is_online = True
                 else:
                     user.is_online = False
