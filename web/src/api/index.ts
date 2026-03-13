@@ -99,6 +99,11 @@ export const api = {
     })
   },
 
+  // 获取高德地图Key
+  getAmapKey(): Promise<string> {
+    return request.get('/get_amap_key')
+  },
+
   // 获取所有电子围栏
   getGeofences(): Promise<GeoFenceMap> {
     return request.get('/get_geofences')

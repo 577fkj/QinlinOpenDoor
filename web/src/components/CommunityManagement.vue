@@ -205,7 +205,7 @@ watch(visible, async (val) => {
 
 // 加载高德地图JS API
 const loadAMapScript = (): Promise<void> => {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     if ((window as any).AMap) {
       AMapRef = (window as any).AMap
       resolve()
@@ -220,10 +220,16 @@ const loadAMapScript = (): Promise<void> => {
       return
     }
 
-    // 使用高德地图JS API 2.0，Key 从 .env.local 的 VITE_AMAP_KEY 读取
-    const AMAP_KEY = import.meta.env.VITE_AMAP_KEY || ''
+    // 从后端获取高德地图Key
+    let AMAP_KEY = ''
+    try {
+      AMAP_KEY = await api.getAmapKey()
+    } catch {
+      reject(new Error('获取高德地图Key失败'))
+      return
+    }
     if (!AMAP_KEY) {
-      reject(new Error('未配置高德地图Key，请在 web/.env.local 中设置 VITE_AMAP_KEY'))
+      reject(new Error('未配置高德地图Key，请在后端配置文件或环境变量中设置'))
       return
     }
     ;(window as any)._AMapSecurityConfig = { securityJsCode: '' }

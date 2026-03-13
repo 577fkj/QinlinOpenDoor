@@ -23,6 +23,17 @@ def create_response(code: int, message: str, data=None):
     return jsonify(response.to_dict()), code if code >= 400 else 200
 
 
+@api_bp.route('/get_amap_key', methods=['GET'])
+async def get_amap_key():
+    """获取高德地图Key（优先环境变量，其次配置文件）"""
+    import os
+    key = os.environ.get('AMAP_KEY', '')
+    if not key:
+        state = get_app_state()
+        key = state.config_manager.config.amap_key or ''
+    return create_response(ResponseCode.SUCCESS.value, "success", key)
+
+
 @api_bp.route('/get_all_users', methods=['GET'])
 async def get_all_users():
     state = get_app_state()
