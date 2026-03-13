@@ -3,6 +3,7 @@ import json
 import re
 import logging
 from quart import Quart, Blueprint, render_template, jsonify, send_from_directory
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .api.routes import api_bp
 from .api.dependencies import AppState
@@ -25,11 +26,15 @@ logger = logging.getLogger(__name__)
 def create_app() -> Quart:
     app = Quart(__name__, template_folder='../templates', static_folder='../static')
     
+    # 配置反向代理支持
+    app.asgi_app = ProxyFix(app.asgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+    
     app.state = AppState()
     
     # 创建主 Blueprint，包含所有需要 token 的路由
     token_bp = Blueprint('token', __name__)
     
+    @token_bp.route('', strict_slashes=False)
     @token_bp.route('/')
     @token_bp.route('/index.html')
     async def index():
