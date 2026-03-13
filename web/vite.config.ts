@@ -5,8 +5,23 @@ import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-export default defineConfig({
-  plugins: [vue()],
+export default defineConfig(({ mode }) => ({
+  plugins: [
+    vue(),
+    {
+      name: 'html-transform',
+      transformIndexHtml(html) {
+        // 只在开发模式下替换 {{ token }}，生产构建保留原样
+        if (mode === 'development') {
+          // 将 /{{ token }}/ 替换为 /，移除路径中的 token 占位符
+          // 将单独的 {{ token }} 替换为空字符串
+          return html.replace(/\/\{\{\s*token\s*\}\}\//g, '/')
+                     .replace(/'\{\{\s*token\s*\}\}'/g, "''")
+        }
+        return html
+      }
+    }
+  ],
   root: 'src',
   publicDir: '../public',
   build: {
@@ -33,14 +48,13 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:5000',
         changeOrigin: true,
-        rewrite: (path) => `${path}`,
         bypass: (req) => {
+          // 如果请求的是源代码文件（.ts, .js, .vue等），不代理到后端
           if (req.url && /\.(ts|js|vue|css|html|json)$/.test(req.url)) {
             return req.url
           }
-          if (req.url?.includes('/api/index.ts')) {
-            return req.url
-          }
+          // 否则代理到后端
+          return null
         }
       }
     }
@@ -50,4 +64,4 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src')
     }
   }
-})
+}))

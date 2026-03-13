@@ -248,6 +248,38 @@ async def logout():
     return create_response(ResponseCode.SUCCESS.value, "success", result)
 
 
+@api_bp.route('/get_favorites', methods=['GET'])
+async def get_favorites():
+    """获取用户的收藏门禁列表"""
+    phone = request.args.get('phone')
+    if not phone:
+        return create_response(ResponseCode.BAD_REQUEST.value, "Please provide phone")
+    
+    state = get_app_state()
+    favorites = state.config_manager.config.favorites.get(phone, [])
+    return create_response(ResponseCode.SUCCESS.value, "success", favorites)
+
+
+@api_bp.route('/save_favorites', methods=['POST'])
+async def save_favorites():
+    """保存用户的收藏门禁列表"""
+    data = await request.get_json()
+    phone = data.get('phone')
+    favorites = data.get('favorites')
+    
+    if phone is None or favorites is None:
+        return create_response(ResponseCode.BAD_REQUEST.value, "Missing parameters")
+    
+    if not isinstance(favorites, list):
+        return create_response(ResponseCode.BAD_REQUEST.value, "favorites must be a list")
+    
+    state = get_app_state()
+    state.config_manager.config.favorites[phone] = favorites
+    await state.config_manager.save()
+    
+    return create_response(ResponseCode.SUCCESS.value, "success")
+
+
 @api_bp.route('/get_door_paddword', methods=['GET'])
 async def get_door_password():
     mac = request.args.get('mac')

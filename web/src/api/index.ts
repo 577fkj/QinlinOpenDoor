@@ -7,7 +7,7 @@ const apiToken = window.API_TOKEN || ''
 
 // 创建axios实例
 const request: AxiosInstance = axios.create({
-  baseURL: `/${apiToken}/api`,
+  baseURL: apiToken ? `/${apiToken}/api` : '/api',
   timeout: 30000
 })
 
@@ -83,6 +83,19 @@ export const api = {
     return request.post('/update_auto_relogin', {
       phone: phone,
       enabled: enabled
+    })
+  },
+
+  // 获取收藏列表
+  getFavorites(phone: string): Promise<number[]> {
+    return request.get(`/get_favorites?phone=${phone}`)
+  },
+
+  // 保存收藏列表
+  saveFavorites(phone: string, favorites: number[]): Promise<void> {
+    return request.post('/save_favorites', {
+      phone: phone,
+      favorites: favorites
     })
   }
 }

@@ -17,6 +17,7 @@ class AppConfig:
     user: Dict[str, User] = field(default_factory=dict)
     access_token: str = 'your-secure-token-here'
     auto_relogin_retry: int = 2
+    favorites: Dict[str, list] = field(default_factory=dict)  # 收藏的门禁，格式: {phone: [doorId1, doorId2, ...]}
 
 
 class ConfigManager:
