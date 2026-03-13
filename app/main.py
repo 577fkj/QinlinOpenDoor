@@ -3,7 +3,6 @@ import json
 import re
 import logging
 from quart import Quart, Blueprint, render_template, jsonify, send_from_directory
-from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .api.routes import api_bp
 from .api.dependencies import AppState
@@ -23,11 +22,46 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ProxyHeadersMiddleware:
+    """ASGI中间件：处理反向代理的X-Forwarded-*头"""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http':
+            headers = dict(scope.get('headers', []))
+            
+            # 处理X-Forwarded-Proto
+            if b'x-forwarded-proto' in headers:
+                scope['scheme'] = headers[b'x-forwarded-proto'].decode('latin1')
+            
+            # 处理X-Forwarded-Host
+            if b'x-forwarded-host' in headers:
+                forwarded_host = headers[b'x-forwarded-host'].decode('latin1')
+                # 处理X-Forwarded-Port
+                if b'x-forwarded-port' in headers:
+                    forwarded_port = headers[b'x-forwarded-port'].decode('latin1')
+                    # 只在非标准端口时添加端口号
+                    if (scope['scheme'] == 'https' and forwarded_port != '443') or \
+                       (scope['scheme'] == 'http' and forwarded_port != '80'):
+                        forwarded_host = f"{forwarded_host}:{forwarded_port}"
+                
+                # 更新server元组中的host
+                scope['server'] = (forwarded_host.split(':')[0], 
+                                 int(forwarded_port) if b'x-forwarded-port' in headers else scope['server'][1])
+                
+                # 更新headers中的host
+                headers[b'host'] = forwarded_host.encode('latin1')
+                scope['headers'] = list(headers.items())
+        
+        await self.app(scope, receive, send)
+
+
 def create_app() -> Quart:
     app = Quart(__name__, template_folder='../templates', static_folder='../static')
     
-    # 配置反向代理支持
-    app.asgi_app = ProxyFix(app.asgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1, x_port=1)
+    # 配置反向代理支持（ASGI中间件）
+    app.asgi_app = ProxyHeadersMiddleware(app.asgi_app)
     
     app.state = AppState()
     
