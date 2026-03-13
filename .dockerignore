@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Node
+web/node_modules/
+web/dist/
+node_modules/
+
+# 构建产物
+static/
+templates/
+
+# 配置文件
+config/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yaml
+.dockerignore
+
+# 其他
+*.log
+.DS_Store
+*.md
+test.py

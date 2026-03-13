@@ -5,6 +5,7 @@ dist_temp
 *.local
 *.log
 __pycache__
-config/config.json
+config/
 templates
 static
+test.py
