@@ -79,6 +79,9 @@ def create_app() -> Quart:
         with open('static/manifest.json', 'r', encoding='utf-8') as f:
             manifest = json.load(f)
         manifest['start_url'] = f"/{app.state.access_token}/"
+        for icon in manifest.get('icons', []):
+            if 'src' in icon:
+                icon['src'] = f"/{app.state.access_token}{icon['src']}"
         return jsonify(manifest)
     
     @token_bp.route('/sw.js')
