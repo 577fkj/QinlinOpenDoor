@@ -37,7 +37,7 @@ class User:
 
 @dataclass
 class RunningUser:
-    api: QinlinClient
+    api: 'QinlinClient'
     phone: str
     user: User
     is_online: bool = False
