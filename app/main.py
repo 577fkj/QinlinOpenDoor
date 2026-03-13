@@ -27,7 +27,7 @@ def create_app() -> Quart:
     app = Quart(__name__, template_folder='../templates', static_folder='../static')
     
     # 配置反向代理支持
-    app.asgi_app = ProxyFix(app.asgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+    app.asgi_app = ProxyFix(app.asgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1, x_port=1)
     
     app.state = AppState()
     
