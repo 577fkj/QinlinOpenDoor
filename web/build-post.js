@@ -58,8 +58,20 @@ function generateServiceWorker(assets) {
   const swTemplatePath = path.join(__dirname, 'public', 'sw.template.js')
   if (!fs.existsSync(swTemplatePath)) return
   
-  const urlsToCache = ['/{{token}}/', '/{{token}}/manifest.json', '/static/icons/icon-192x192.png', '/static/icons/icon-512x512.png', ...assets.css, ...assets.js]
-  
+  const urlsToCache = [
+    '/', '/index.html',
+    '/manifest.json',
+    '/static/icons/icon-16x16.png',
+    '/static/icons/icon-32x32.png',
+    '/static/icons/icon-192x192.png',
+    '/static/icons/icon-512x512.png',
+    ...assets.css, ...assets.js
+  ]
+
+  for (let i = 0; i < urlsToCache.length; i++) {
+    urlsToCache[i] = `/{{token}}${urlsToCache[i]}`
+  }
+
   let swContent = fs.readFileSync(swTemplatePath, 'utf-8')
     .replace('CACHE_VERSION_PLACEHOLDER', `door-control-v${Date.now()}`)
     .replace('URLS_TO_CACHE_PLACEHOLDER', JSON.stringify(urlsToCache, null, 4))
