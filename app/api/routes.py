@@ -10,6 +10,7 @@ from ..models.device import Device
 from ..models.user import UserData
 from ..qinlin.client import QinlinClient
 from ..core.security import Crypto
+from ..core.config import GeoFence
 from .dependencies import get_app_state
 
 logger = logging.getLogger(__name__)
@@ -341,3 +342,58 @@ async def receive_sms():
             ResponseCode.NOT_FOUND.value,
             f"No user waiting for verification code"
         )
+
+
+@api_bp.route('/get_geofences', methods=['GET'])
+async def get_geofences():
+    """获取所有电子围栏"""
+    state = get_app_state()
+    geofences = state.config_manager.config.geofences
+    result = {}
+    for phone, communities in geofences.items():
+        result[phone] = {cid: fence.to_dict() for cid, fence in communities.items()}
+    return create_response(ResponseCode.SUCCESS.value, "success", result)
+
+
+@api_bp.route('/save_geofence', methods=['POST'])
+async def save_geofence():
+    """保存电子围栏"""
+    data = await request.get_json()
+    phone = data.get('phone')
+    community_id = data.get('community_id')
+    name = data.get('name', '')
+    points = data.get('points')
+
+    if not phone or not community_id or not isinstance(points, list):
+        return create_response(ResponseCode.BAD_REQUEST.value, "Missing phone, community_id or points")
+
+    state = get_app_state()
+    fence = GeoFence(name=name, points=points)
+    if phone not in state.config_manager.config.geofences:
+        state.config_manager.config.geofences[phone] = {}
+    state.config_manager.config.geofences[phone][str(community_id)] = fence
+    await state.config_manager.save()
+
+    return create_response(ResponseCode.SUCCESS.value, "success")
+
+
+@api_bp.route('/delete_geofence', methods=['POST'])
+async def delete_geofence():
+    """删除电子围栏"""
+    data = await request.get_json()
+    phone = data.get('phone')
+    community_id = data.get('community_id')
+
+    if not phone or not community_id:
+        return create_response(ResponseCode.BAD_REQUEST.value, "Missing phone or community_id")
+
+    state = get_app_state()
+    community_id = str(community_id)
+    if phone in state.config_manager.config.geofences:
+        if community_id in state.config_manager.config.geofences[phone]:
+            del state.config_manager.config.geofences[phone][community_id]
+            if not state.config_manager.config.geofences[phone]:
+                del state.config_manager.config.geofences[phone]
+            await state.config_manager.save()
+
+    return create_response(ResponseCode.SUCCESS.value, "success")

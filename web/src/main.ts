@@ -5,6 +5,13 @@ import 'element-plus/dist/index.css'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import App from './App.vue'
 
+// 开发模式下启用 vConsole
+if (import.meta.env.DEV) {
+  import('vconsole').then(({ default: VConsole }) => {
+    new VConsole()
+  })
+}
+
 const app = createApp(App)
 const pinia = createPinia()
 
@@ -21,7 +28,7 @@ const apiToken = window.API_TOKEN || ''
 // 注册 Service Worker
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    const swUrl = `/${apiToken}/sw.js`
+    const swUrl = apiToken ? `/${apiToken}/sw.js` : '/sw.js'
     navigator.serviceWorker.register(swUrl)
       .then(registration => {
         console.log('ServiceWorker registration successful')

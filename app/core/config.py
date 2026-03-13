@@ -13,11 +13,19 @@ from ..models.user import User
 
 @dataclass_json
 @dataclass
+class GeoFence:
+    name: str = ''
+    points: list = field(default_factory=list)  # [[lng, lat], ...]
+
+
+@dataclass_json
+@dataclass
 class AppConfig:
     user: Dict[str, User] = field(default_factory=dict)
     access_token: str = 'your-secure-token-here'
     auto_relogin_retry: int = 2
     favorites: Dict[str, list] = field(default_factory=dict)  # 收藏的门禁，格式: {phone: [doorId1, doorId2, ...]}
+    geofences: Dict[str, Dict[str, GeoFence]] = field(default_factory=dict)  # 电子围栏，格式: {phone: {communityId: GeoFence}}
 
 
 class ConfigManager:

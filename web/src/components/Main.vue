@@ -4,9 +4,14 @@
       <template #header>
         <div class="card-header">
           <h2>门禁控制</h2>
-          <el-button type="primary" @click="showAccountDialog = true">
-            账号管理
-          </el-button>
+          <div class="header-actions">
+            <el-button @click="showCommunityDialog = true">
+              社区管理
+            </el-button>
+            <el-button type="primary" @click="showAccountDialog = true">
+              账号管理
+            </el-button>
+          </div>
         </div>
       </template>
 
@@ -16,7 +21,7 @@
         placeholder="请选择社区"
         size="large"
         style="width: 100%; margin-bottom: 20px"
-        @change="handleCommunityChange"
+        @change="() => handleCommunityChange(false)"
       >
         <el-option
           v-for="(community, key) in userStore.communities"
@@ -157,6 +162,12 @@
       v-model="showAccountDialog"
       @reload="handleReload"
     />
+
+    <!-- 社区管理对话框 -->
+    <CommunityManagement
+      v-model="showCommunityDialog"
+      @fences-updated="handleFencesUpdated"
+    />
   </div>
 </template>
 
@@ -167,8 +178,9 @@ import { Star, StarFilled, Menu } from '@element-plus/icons-vue'
 import { useUserStore } from '../stores/user'
 import api from '../api'
 import AccountManagement from './AccountManagement.vue'
+import CommunityManagement from './CommunityManagement.vue'
 import { hexMd5 } from '../utils/md5'
-import type { DoorInfo, LogItem } from '../types'
+import type { DoorInfo, LogItem, GeoFenceMap } from '../types'
 
 interface ExtendedDoorInfo extends DoorInfo {
     phone: string
@@ -184,9 +196,180 @@ const selectedCommunity = ref('')
 const currentDoors = ref<ExtendedDoorInfo[]>([])
 const logs = ref<LogItem[]>([])
 const showAccountDialog = ref(false)
+const showCommunityDialog = ref(false)
 const favorites = ref<number[]>([])
 const passwordTimers: Record<string, number> = {}
 let supportedDevices: string[] | null = null
+
+// 自动切换社区相关
+const geofences = ref<GeoFenceMap>({})
+const autoSwitchDisabled = ref(false) // 手动切换后禁用自动切换
+let geoWatchId: number | null = null
+
+// WGS84 → GCJ02 坐标转换（中国地图偏移校正）
+const PI = Math.PI
+const A = 6378245.0
+const EE = 0.00669342162296594323
+
+const transformLat = (x: number, y: number): number => {
+  let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x))
+  ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0
+  ret += (20.0 * Math.sin(y * PI) + 40.0 * Math.sin(y / 3.0 * PI)) * 2.0 / 3.0
+  ret += (160.0 * Math.sin(y / 12.0 * PI) + 320.0 * Math.sin(y * PI / 30.0)) * 2.0 / 3.0
+  return ret
+}
+
+const transformLng = (x: number, y: number): number => {
+  let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x))
+  ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0
+  ret += (20.0 * Math.sin(x * PI) + 40.0 * Math.sin(x / 3.0 * PI)) * 2.0 / 3.0
+  ret += (150.0 * Math.sin(x / 12.0 * PI) + 300.0 * Math.sin(x / 30.0 * PI)) * 2.0 / 3.0
+  return ret
+}
+
+const wgs84ToGcj02 = (wgsLng: number, wgsLat: number): [number, number] => {
+  let dLat = transformLat(wgsLng - 105.0, wgsLat - 35.0)
+  let dLng = transformLng(wgsLng - 105.0, wgsLat - 35.0)
+  const radLat = wgsLat / 180.0 * PI
+  let magic = Math.sin(radLat)
+  magic = 1 - EE * magic * magic
+  const sqrtMagic = Math.sqrt(magic)
+  dLat = (dLat * 180.0) / ((A * (1 - EE)) / (magic * sqrtMagic) * PI)
+  dLng = (dLng * 180.0) / (A / sqrtMagic * Math.cos(radLat) * PI)
+  return [wgsLng + dLng, wgsLat + dLat]
+}
+
+// 计算围栏总数
+const geofenceCount = (): number => {
+  let count = 0
+  for (const communities of Object.values(geofences.value)) {
+    count += Object.keys(communities).length
+  }
+  return count
+}
+
+// 加载围栏数据
+const loadGeofences = async () => {
+  try {
+    geofences.value = await api.getGeofences()
+  } catch (error) {
+    console.error('加载围栏数据失败:', error)
+  }
+}
+
+// 判断点是否在多边形内（射线法）
+const isPointInPolygon = (lng: number, lat: number, polygon: [number, number][]): boolean => {
+  let inside = false
+  const n = polygon.length
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1]
+    const xj = polygon[j][0], yj = polygon[j][1]
+    const intersect = ((yi > lat) !== (yj > lat)) &&
+      (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
+// 根据定位检测当前所在社区
+const detectCommunityByLocation = (lng: number, lat: number): string | null => {
+  for (const [phone, communities] of Object.entries(geofences.value)) {
+    for (const [communityId, fence] of Object.entries(communities)) {
+      if (fence.points && fence.points.length >= 3) {
+        if (isPointInPolygon(lng, lat, fence.points as [number, number][])) {
+          console.log(`[GeoFence] 当前位置在社区 ${communityId} 内 (用户 ${phone})`)
+          return `${phone}_${communityId}`
+        }
+      }
+    }
+  }
+  return null
+}
+
+// 处理位置变化 - 自动切换社区
+const handlePositionChange = (position: GeolocationPosition) => {
+  if (autoSwitchDisabled.value) return
+  const { longitude, latitude } = position.coords
+  // 浏览器返回WGS84坐标，围栏使用GCJ02（高德），需要转换
+  const [gcjLng, gcjLat] = wgs84ToGcj02(longitude, latitude)
+  console.log(`[GeoFence] 当前位置 WGS84: ${longitude.toFixed(6)},${latitude.toFixed(6)} → GCJ02: ${gcjLng.toFixed(6)},${gcjLat.toFixed(6)}`)
+  const matchedKey = detectCommunityByLocation(gcjLng, gcjLat)
+  if (matchedKey && matchedKey !== selectedCommunity.value) {
+    // 检测到需要切换社区
+    if (userStore.communities && userStore.communities[matchedKey]) {
+      selectedCommunity.value = matchedKey
+      handleCommunityChange(true)
+      addLog(`已自动切换到社区: ${userStore.communities[matchedKey].communityName}`, true)
+    }
+  }
+}
+
+// 启动地理位置监听
+const startGeoWatch = () => {
+  if (!navigator.geolocation) {
+    console.warn('[GeoFence] 浏览器不支持定位')
+    return
+  }
+  stopGeoWatch()
+
+  const geoError = (err: GeolocationPositionError) => {
+    console.warn(`[GeoFence] 定位失败: code=${err.code}, ${err.message}`)
+    if (err.code === 1) {
+      addLog('定位权限被拒绝，无法自动切换社区', false)
+    }
+  }
+
+  // 首次获取位置
+  navigator.geolocation.getCurrentPosition(
+    handlePositionChange,
+    geoError,
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+  )
+
+  // 持续监听
+  geoWatchId = navigator.geolocation.watchPosition(
+    handlePositionChange,
+    geoError,
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
+  )
+  console.log('[GeoFence] 地理围栏监听已启动')
+}
+
+// 停止地理位置监听
+const stopGeoWatch = () => {
+  if (geoWatchId !== null) {
+    navigator.geolocation.clearWatch(geoWatchId)
+    geoWatchId = null
+  }
+}
+
+// PWA可见性变化 - 重新激活自动切换
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'visible') {
+    // 页面重新可见时，重新激活自动切换
+    autoSwitchDisabled.value = false
+    console.log('[GeoFence] 页面可见，重新激活自动切换')
+    // 立即获取一次位置进行检测
+    if (navigator.geolocation && geofenceCount() > 0) {
+      navigator.geolocation.getCurrentPosition(
+        handlePositionChange,
+        (err) => console.warn(`[GeoFence] 可见性触发定位失败: ${err.message}`),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      )
+    }
+  }
+}
+
+// 围栏更新回调
+const handleFencesUpdated = async () => {
+  await loadGeofences()
+  // 重启地理位置监听
+  if (geofenceCount() > 0) {
+    startGeoWatch()
+  } else {
+    stopGeoWatch()
+  }
+}
 
 // 计算属性：收藏的门（按收藏顺序排序）
 const favoriteDoors = computed(() => {
@@ -276,8 +459,13 @@ const updateDoorPassword = async (communityId: string, door: ExtendedDoorInfo): 
   }
 }
 
-// 处理社区选择变化
-const handleCommunityChange = async (): Promise<void> => {
+// 处理社区选择变化（isAutoSwitch标记是否为自动切换）
+const handleCommunityChange = async (isAutoSwitch = false): Promise<void> => {
+  // 如果是用户手动选择（不是自动切换触发），禁用自动切换
+  if (!isAutoSwitch && geofenceCount() > 0) {
+    autoSwitchDisabled.value = true
+  }
+
   // 清除所有定时器
   Object.values(passwordTimers).forEach(timer => clearTimeout(timer))
   Object.keys(passwordTimers).forEach(key => delete passwordTimers[key])
@@ -447,22 +635,36 @@ const handleReload = async (): Promise<void> => {
 onMounted(async () => {
   // 加载收藏列表
   await loadFavorites()
-  
+
+  // 加载围栏数据
+  await loadGeofences()
+  console.log(`[GeoFence] 加载了 ${geofenceCount()} 个围栏`)
+
   // 尝试恢复上次选择的社区
   const savedCommunity = localStorage.getItem('communityId')
   if (savedCommunity && userStore.communities && userStore.communities[savedCommunity]) {
     selectedCommunity.value = savedCommunity
-    handleCommunityChange()
+    handleCommunityChange(true)
   } else if (userStore.communities && Object.keys(userStore.communities).length > 0) {
     // 如果没有保存的社区或社区无效，选择第一个
     selectedCommunity.value = Object.keys(userStore.communities)[0]
-    handleCommunityChange()
+    handleCommunityChange(true)
   }
+
+  // 启动地理围栏监听
+  if (geofenceCount() > 0) {
+    startGeoWatch()
+  }
+
+  // 监听页面可见性变化（PWA重新显示时重新激活自动切换）
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 // 清理定时器
 onUnmounted(() => {
   Object.values(passwordTimers).forEach(timer => clearTimeout(timer))
+  stopGeoWatch()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
 

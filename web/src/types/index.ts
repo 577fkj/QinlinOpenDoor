@@ -80,3 +80,12 @@ export interface LogItem {
   message: string
   success: boolean
 }
+
+// 电子围栏
+export interface GeoFence {
+  name: string
+  points: [number, number][]  // [lng, lat][]
+}
+
+// 电子围栏Map: phone -> communityId -> GeoFence
+export type GeoFenceMap = Record<string, Record<string, GeoFence>>

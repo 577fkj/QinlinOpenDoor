@@ -1,6 +1,6 @@
 import axios, { AxiosInstance, AxiosError, AxiosResponse } from 'axios'
 import { ElMessage } from 'element-plus'
-import type { ApiResponse, UserData, SmsCodeResponse, GetSmsCodeResponse } from '../types'
+import type { ApiResponse, UserData, SmsCodeResponse, GetSmsCodeResponse, GeoFenceMap } from '../types'
 
 // 从全局变量获取动态 token
 const apiToken = window.API_TOKEN || ''
@@ -96,6 +96,29 @@ export const api = {
     return request.post('/save_favorites', {
       phone: phone,
       favorites: favorites
+    })
+  },
+
+  // 获取所有电子围栏
+  getGeofences(): Promise<GeoFenceMap> {
+    return request.get('/get_geofences')
+  },
+
+  // 保存电子围栏
+  saveGeofence(phone: string, communityId: string, name: string, points: [number, number][]): Promise<void> {
+    return request.post('/save_geofence', {
+      phone: phone,
+      community_id: communityId,
+      name: name,
+      points: points
+    })
+  },
+
+  // 删除电子围栏
+  deleteGeofence(phone: string, communityId: string): Promise<void> {
+    return request.post('/delete_geofence', {
+      phone: phone,
+      community_id: communityId
     })
   }
 }

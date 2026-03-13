@@ -1,11 +1,13 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, path.resolve(__dirname, '..'), 'VITE_')
+  return {
   plugins: [
     vue(),
     {
@@ -23,6 +25,7 @@ export default defineConfig(({ mode }) => ({
     }
   ],
   root: 'src',
+  envDir: '../..',  // 在 web 目录下查找 .env 文件
   publicDir: '../public',
   build: {
     outDir: '../dist_temp',
@@ -44,6 +47,10 @@ export default defineConfig(({ mode }) => ({
   },
   server: {
     port: 5173,
+    host: true, // 允许外部访问
+    allowedHosts: env.VITE_ALLOWED_HOSTS
+      ? env.VITE_ALLOWED_HOSTS.split(',')
+      : true,
     proxy: {
       '/api': {
         target: 'http://localhost:5000',
@@ -64,4 +71,4 @@ export default defineConfig(({ mode }) => ({
       '@': path.resolve(__dirname, './src')
     }
   }
-}))
+}})
